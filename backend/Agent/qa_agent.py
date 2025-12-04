@@ -1,11 +1,8 @@
-"""
-问答Agent - 基于项目数据提供智能问答
-"""
+"""问答Agent - 基于项目数据提供智能问答"""
 import os
 import json
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-# 尝试导入 DeepSeek 客户端
 try:
     from .deepseek_client import DeepSeekClient
     DEEPSEEK_AVAILABLE = True
@@ -15,22 +12,11 @@ except ImportError:
         DEEPSEEK_AVAILABLE = True
     except ImportError:
         DEEPSEEK_AVAILABLE = False
-        print("⚠ DeepSeek 客户端未找到，将使用规则匹配模式")
 
 
 class QAAgent:
-    """项目数据问答Agent"""
-    
     def __init__(self, data_dir: str = None, use_ai: bool = True):
-        """
-        初始化问答Agent
-        
-        Args:
-            data_dir: 数据目录路径
-            use_ai: 是否使用 AI（DeepSeek）进行问答
-        """
         if data_dir is None:
-            # 默认数据目录
             current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             self.data_dir = os.path.join(current_dir, 'DataProcessor', 'data')
         else:
@@ -39,27 +25,17 @@ class QAAgent:
         self.project_cache = {}
         self.use_ai = use_ai and DEEPSEEK_AVAILABLE
         
-        # 初始化 DeepSeek 客户端
         if self.use_ai:
             try:
                 self.deepseek = DeepSeekClient()
                 print("✓ DeepSeek AI 已启用")
             except Exception as e:
-                print(f"⚠ DeepSeek 初始化失败: {e}，将使用规则匹配模式")
+                print(f"⚠ DeepSeek 初始化失败，将使用规则匹配模式")
                 self.use_ai = False
         else:
             self.deepseek = None
     
     def load_project_data(self, project_name: str) -> Optional[Dict]:
-        """
-        加载项目数据
-        
-        Args:
-            project_name: 项目名称（格式：owner_repo）
-        
-        Returns:
-            项目数据字典，如果不存在返回None
-        """
         if project_name in self.project_cache:
             return self.project_cache[project_name]
         
@@ -67,7 +43,6 @@ class QAAgent:
         if not os.path.exists(project_path):
             return None
         
-        # 查找最新的processed文件夹
         processed_folders = [
             f for f in os.listdir(project_path) 
             if os.path.isdir(os.path.join(project_path, f)) and '_processed' in f
@@ -76,25 +51,21 @@ class QAAgent:
         if not processed_folders:
             return None
         
-        # 使用最新的文件夹
         latest_folder = sorted(processed_folders)[-1]
         processed_path = os.path.join(project_path, latest_folder)
         
         data = {}
         
-        # 加载处理摘要
         summary_path = os.path.join(processed_path, 'processing_summary.json')
         if os.path.exists(summary_path):
             with open(summary_path, 'r', encoding='utf-8') as f:
                 data['summary'] = json.load(f)
         
-        # 加载文本数据
         text_path = os.path.join(processed_path, 'text_data_structured.json')
         if os.path.exists(text_path):
             with open(text_path, 'r', encoding='utf-8') as f:
                 data['text_data'] = json.load(f)
         
-        # 加载时序数据
         timeseries_path = os.path.join(processed_path, 'timeseries_data.json')
         if os.path.exists(timeseries_path):
             with open(timeseries_path, 'r', encoding='utf-8') as f:
@@ -104,16 +75,6 @@ class QAAgent:
         return data
     
     def answer_question(self, question: str, project_name: str) -> Dict:
-        """
-        回答关于项目的问题
-        
-        Args:
-            question: 用户问题
-            project_name: 项目名称
-        
-        Returns:
-            包含答案和来源的字典
-        """
         data = self.load_project_data(project_name)
         if not data:
             return {
@@ -122,61 +83,36 @@ class QAAgent:
                 'confidence': 0.0
             }
         
-        # 如果启用了 AI，使用 DeepSeek 回答
         if self.use_ai and self.deepseek:
             return self._answer_with_ai(data, question, project_name)
         
-        # 否则使用规则匹配
-        question_lower = question.lower()
-        
-        # 项目基本信息问题
-        if any(keyword in question_lower for keyword in ['什么', '介绍', '描述', '基本信息', '概况']):
-            return self._answer_basic_info(data, question)
-        
-        # 统计信息问题
-        if any(keyword in question_lower for keyword in ['多少', '数量', '统计', '总数']):
-            return self._answer_statistics(data, question)
-        
-        # Issue相关问题
-        if 'issue' in question_lower or '问题' in question_lower:
-            return self._answer_issues(data, question)
-        
-        # 时序数据问题
-        if any(keyword in question_lower for keyword in ['趋势', '变化', '增长', '下降', '时间']):
-            return self._answer_timeseries(data, question)
-        
-        # 默认回答
-        return self._answer_general(data, question)
+        return self._answer_with_rules(data, question)
     
     def _answer_with_ai(self, data: Dict, question: str, project_name: str) -> Dict:
-        """使用 DeepSeek AI 回答问题"""
         summary = data.get('summary', {})
         
-        # 构建上下文
-        context_parts = []
-        context_parts.append(f"项目名称: {project_name}")
-        context_parts.append(f"文档总数: {summary.get('text_documents_count', 0)}")
-        context_parts.append(f"时序指标数: {summary.get('timeseries_metrics_count', 0)}")
+        context_parts = [
+            f"项目名称: {project_name}",
+            f"文档总数: {summary.get('text_documents_count', 0)}",
+            f"时序指标数: {summary.get('timeseries_metrics_count', 0)}"
+        ]
         
-        # 添加文档类型统计
         by_type = summary.get('text_documents_by_type', {})
         if by_type:
             context_parts.append("文档类型分布:")
             for doc_type, count in by_type.items():
                 context_parts.append(f"  - {doc_type}: {count}")
         
-        # 添加部分文本数据（限制长度）
         text_data = data.get('text_data', [])
         if text_data:
             context_parts.append("\n项目相关文本数据（部分）:")
-            for i, doc in enumerate(text_data[:3]):  # 只取前3个文档
+            for i, doc in enumerate(text_data[:3]):
                 doc_type = doc.get('type', 'unknown')
-                content = doc.get('content', '')[:500]  # 限制内容长度
+                content = doc.get('content', '')[:500]
                 context_parts.append(f"\n文档{i+1} ({doc_type}):\n{content}")
         
         context = "\n".join(context_parts)
         
-        # 调用 DeepSeek
         try:
             answer = self.deepseek.ask(question, context)
             return {
@@ -185,176 +121,91 @@ class QAAgent:
                 'confidence': 0.9
             }
         except Exception as e:
-            print(f"[ERROR] DeepSeek 调用失败: {e}")
-            # 降级到规则匹配
-            return self._answer_general(data, question)
+            return self._answer_with_rules(data, question)
     
-    def _answer_basic_info(self, data: Dict, question: str) -> Dict:
-        """回答基本信息问题"""
+    def _answer_with_rules(self, data: Dict, question: str) -> Dict:
         summary = data.get('summary', {})
+        question_lower = question.lower()
+        
+        if any(kw in question_lower for kw in ['什么', '介绍', '描述', '基本信息']):
+            return self._get_basic_info(data)
+        
+        if any(kw in question_lower for kw in ['多少', '数量', '统计']):
+            return self._get_statistics(summary)
+        
+        if 'issue' in question_lower or '问题' in question_lower:
+            return self._get_issues_info(data)
+        
+        return self._get_general_info(summary)
+    
+    def _get_basic_info(self, data: Dict) -> Dict:
         text_data = data.get('text_data', [])
+        repo_info = next((doc for doc in text_data if doc.get('type') == 'repo_info'), None)
         
-        # 查找repo_info
-        repo_info = None
-        for doc in text_data:
-            if doc.get('type') == 'repo_info':
-                repo_info = doc.get('content', '')
-                break
-        
-        answer = "根据项目数据，"
         if repo_info:
-            # 提取关键信息
-            lines = repo_info.split('\n')
-            key_info = []
-            for line in lines[:10]:  # 前10行通常包含关键信息
-                if ':' in line and any(keyword in line.lower() for keyword in ['仓库', '描述', '语言', 'star', 'fork']):
-                    key_info.append(line.strip())
-            
-            if key_info:
-                answer += "\n".join(key_info[:5])
-            else:
-                answer += repo_info[:200] + "..."
+            content = repo_info.get('content', '')
+            lines = [l.strip() for l in content.split('\n')[:10] if ':' in l]
+            answer = "根据项目数据，\n" + "\n".join(lines[:5])
         else:
-            answer += f"这是一个开源项目，已处理 {summary.get('text_documents_count', 0)} 个文档。"
+            summary = data.get('summary', {})
+            answer = f"这是一个开源项目，已处理 {summary.get('text_documents_count', 0)} 个文档。"
         
-        return {
-            'answer': answer,
-            'sources': ['项目基本信息'],
-            'confidence': 0.8
-        }
+        return {'answer': answer, 'sources': ['项目基本信息'], 'confidence': 0.8}
     
-    def _answer_statistics(self, data: Dict, question: str) -> Dict:
-        """回答统计问题"""
-        summary = data.get('summary', {})
+    def _get_statistics(self, summary: Dict) -> Dict:
+        stats = [
+            f"文档总数: {summary.get('text_documents_count', 0)}",
+            f"时序指标数: {summary.get('timeseries_metrics_count', 0)}"
+        ]
         
-        stats = []
-        if '文档' in question or 'document' in question.lower():
-            stats.append(f"文档总数: {summary.get('text_documents_count', 0)}")
-            by_type = summary.get('text_documents_by_type', {})
+        by_type = summary.get('text_documents_by_type', {})
+        if by_type:
+            stats.append("文档类型分布:")
             for doc_type, count in by_type.items():
                 stats.append(f"  - {doc_type}: {count}")
         
-        if '指标' in question or 'metric' in question.lower():
-            stats.append(f"时序指标数: {summary.get('timeseries_metrics_count', 0)}")
-        
-        answer = "项目统计信息：\n" + "\n".join(stats) if stats else "暂无相关统计信息。"
-        
         return {
-            'answer': answer,
+            'answer': "项目统计信息：\n" + "\n".join(stats),
             'sources': ['处理摘要'],
             'confidence': 0.9
         }
     
-    def _answer_issues(self, data: Dict, question: str) -> Dict:
-        """回答Issue相关问题"""
+    def _get_issues_info(self, data: Dict) -> Dict:
         text_data = data.get('text_data', [])
         issues = [doc for doc in text_data if doc.get('type') == 'issue']
         
         if not issues:
-            return {
-                'answer': '该项目暂无Issue数据。',
-                'sources': [],
-                'confidence': 0.7
-            }
-        
-        # 统计open和closed的issue
-        open_count = sum(1 for issue in issues if 'open' in issue.get('content', '').lower())
-        closed_count = len(issues) - open_count
-        
-        answer = f"项目共有 {len(issues)} 个Issue，其中开放 {open_count} 个，已关闭 {closed_count} 个。"
-        
-        # 如果问最新的issue
-        if '最新' in question or '最近' in question:
-            latest = issues[0] if issues else None
-            if latest:
-                title = latest.get('title', '')
-                answer += f"\n最新的Issue: {title}"
+            return {'answer': '该项目暂无Issue数据。', 'sources': [], 'confidence': 0.7}
         
         return {
-            'answer': answer,
+            'answer': f"项目共有 {len(issues)} 个Issue。",
             'sources': [f'Issue数据（共{len(issues)}条）'],
             'confidence': 0.85
         }
     
-    def _answer_timeseries(self, data: Dict, question: str) -> Dict:
-        """回答时序数据问题"""
-        timeseries = data.get('timeseries', {})
-        
-        if not timeseries:
-            return {
-                'answer': '该项目暂无时序数据。',
-                'sources': [],
-                'confidence': 0.7
-            }
-        
-        # 获取指标列表
-        metrics = list(timeseries.keys())[:5]  # 前5个指标
-        
-        answer = f"项目包含 {len(timeseries)} 个时序指标。"
-        if metrics:
-            answer += f"\n主要指标包括：{', '.join(metrics)}"
-        
-        return {
-            'answer': answer,
-            'sources': ['时序数据'],
-            'confidence': 0.8
-        }
-    
-    def _answer_general(self, data: Dict, question: str) -> Dict:
-        """通用回答"""
-        summary = data.get('summary', {})
-        
-        answer = f"关于这个项目：\n"
-        answer += f"- 已处理 {summary.get('text_documents_count', 0)} 个文档\n"
-        answer += f"- 包含 {summary.get('timeseries_metrics_count', 0)} 个时序指标\n"
-        answer += "\n您可以询问：\n"
-        answer += "- 项目的基本信息\n"
-        answer += "- 统计数据\n"
-        answer += "- Issue情况\n"
-        answer += "- 时序趋势"
-        
-        return {
-            'answer': answer,
-            'sources': ['项目数据'],
-            'confidence': 0.6
-        }
+    def _get_general_info(self, summary: Dict) -> Dict:
+        answer = (
+            f"关于这个项目：\n"
+            f"- 已处理 {summary.get('text_documents_count', 0)} 个文档\n"
+            f"- 包含 {summary.get('timeseries_metrics_count', 0)} 个时序指标\n\n"
+            f"您可以询问：\n"
+            f"- 项目的基本信息\n"
+            f"- 统计数据\n"
+            f"- Issue情况"
+        )
+        return {'answer': answer, 'sources': ['项目数据'], 'confidence': 0.6}
     
     def get_project_summary(self, project_name: str) -> Dict:
-        """
-        获取项目摘要
-        
-        Args:
-            project_name: 项目名称
-        
-        Returns:
-            项目摘要字典
-        """
         data = self.load_project_data(project_name)
         if not data:
-            return {
-                'exists': False,
-                'name': project_name
-            }
+            return {'exists': False, 'name': project_name}
         
         summary = data.get('summary', {})
-        text_data = data.get('text_data', [])
-        
-        # 提取仓库信息
-        repo_info = None
-        for doc in text_data:
-            if doc.get('type') == 'repo_info':
-                content = doc.get('content', '')
-                # 提取仓库名称
-                for line in content.split('\n'):
-                    if '仓库名称:' in line:
-                        repo_info = line.split(':', 1)[1].strip()
-                        break
-                break
         
         return {
             'exists': True,
             'name': project_name,
-            'repo': repo_info or project_name,
+            'repo': project_name,
             'documents_count': summary.get('text_documents_count', 0),
             'metrics_count': summary.get('timeseries_metrics_count', 0),
             'processed_at': summary.get('processed_at', ''),

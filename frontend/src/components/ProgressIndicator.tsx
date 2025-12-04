@@ -34,15 +34,10 @@ export default function ProgressIndicator({ progress }: ProgressIndicatorProps) 
 
   return (
     <div className="bg-cyber-card/50 backdrop-blur-sm rounded-2xl border border-cyber-border p-6 shadow-2xl">
-      {/* 进度条 */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm font-medium text-cyber-text font-chinese">
-            {progress.stepName}
-          </span>
-          <span className="text-sm font-mono text-cyber-muted">
-            {progress.progress}%
-          </span>
+          <span className="text-sm font-medium text-cyber-text font-chinese">{progress.stepName}</span>
+          <span className="text-sm font-mono text-cyber-muted">{progress.progress}%</span>
         </div>
         
         <div className="relative h-3 bg-cyber-bg rounded-full overflow-hidden border border-cyber-border">
@@ -53,23 +48,14 @@ export default function ProgressIndicator({ progress }: ProgressIndicatorProps) 
             transition={{ duration: 0.3, ease: 'easeOut' }}
           />
           {!isComplete && (
-            <motion.div
-              className="absolute inset-y-0 bg-cyber-primary/30"
-              style={{ width: '30%' }}
-              animate={{
-                x: ['-100%', '400%'],
-              }}
-              transition={{
-                duration: 1.5,
-                repeat: Infinity,
-                ease: 'linear'
-              }}
+            <motion.div className="absolute inset-y-0 bg-cyber-primary/30" style={{ width: '30%' }}
+              animate={{ x: ['-100%', '400%'] }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
             />
           )}
         </div>
       </div>
 
-      {/* 当前步骤信息 */}
       <div className="flex items-start gap-4">
         <div className="flex-shrink-0 mt-1">
           {isComplete ? (
@@ -80,33 +66,23 @@ export default function ProgressIndicator({ progress }: ProgressIndicatorProps) 
         </div>
         
         <div className="flex-1">
-          <p className="text-cyber-text font-chinese mb-2">
-            {progress.message}
-          </p>
+          <p className="text-cyber-text font-chinese mb-2">{progress.message}</p>
           
-          {/* 步骤列表 */}
           <div className="mt-4 space-y-2">
             {stepNames.slice(0, currentStepIndex + 1).map((stepName, index) => (
-              <motion.div
-                key={index}
-                className="flex items-center gap-2 text-sm"
+              <motion.div key={index} className="flex items-center gap-2 text-sm"
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: index * 0.05 }}
-              >
+                transition={{ delay: index * 0.05 }}>
                 <div className={`w-2 h-2 rounded-full ${
-                  index < currentStepIndex 
-                    ? 'bg-green-400' 
-                    : index === currentStepIndex 
-                    ? 'bg-cyber-primary animate-pulse' 
-                    : 'bg-cyber-border'
+                  index < currentStepIndex ? 'bg-green-400' : 
+                  index === currentStepIndex ? 'bg-cyber-primary animate-pulse' : 
+                  'bg-cyber-border'
                 }`} />
                 <span className={`font-chinese ${
-                  index < currentStepIndex 
-                    ? 'text-cyber-muted line-through' 
-                    : index === currentStepIndex 
-                    ? 'text-cyber-primary font-medium' 
-                    : 'text-cyber-muted/50'
+                  index < currentStepIndex ? 'text-cyber-muted line-through' : 
+                  index === currentStepIndex ? 'text-cyber-primary font-medium' : 
+                  'text-cyber-muted/50'
                 }`}>
                   {stepName}
                 </span>
@@ -118,4 +94,3 @@ export default function ProgressIndicator({ progress }: ProgressIndicatorProps) 
     </div>
   )
 }
-

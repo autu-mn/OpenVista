@@ -1,3 +1,10 @@
+# 环境变量和敏感信息
+.env
+.env.*
+*.env
+.env.local
+.env.production
+
 # Python
 __pycache__/
 *.py[cod]
@@ -19,15 +26,19 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
-
-# 虚拟环境
 venv/
-env/
 ENV/
-.venv
-env.bak/
-venv.bak/
+env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dist/
+dist-ssr/
+*.local
 
 # IDE
 .vscode/
@@ -37,116 +48,28 @@ venv.bak/
 *~
 .DS_Store
 
-# 环境变量和敏感配置
-.env
-.env.local
-.env.*.local
-*.env
-.envrc
-config.ini
-config.yaml
-config.yml
-secrets.yaml
-secrets.yml
+# 数据文件
+backend/DataProcessor/data/
+backend/Data/
+*.json
+*.csv
+*.xlsx
+!requirements.txt
+!package.json
+!package-lock.json
+!tsconfig.json
 
-# 密钥和证书
-*.key
-*.pem
-*.p12
-*.pfx
-*.crt
-*.cer
-*.jks
-secrets/
-credentials/
-*.secret
+# 测试文件
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
 
-# 日志文件
+# 日志
 *.log
 logs/
-*.log.*
-log/
-
-# 数据库
-*.db
-*.sqlite
-*.sqlite3
-*.db-journal
 
 # 临时文件
 *.tmp
 *.temp
 .cache/
-tmp/
-temp/
-*.bak
-*.swp
-
-# Node.js
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-# 注意：package-lock.json 和 yarn.lock 通常应该被跟踪，如果需要忽略请取消注释
-# package-lock.json
-# yarn.lock
-pnpm-lock.yaml
-
-# 操作系统文件
-Thumbs.db
-.DS_Store
-*.swp
-*.swo
-desktop.ini
-
-# 数据文件（包含爬取的仓库数据，可能包含敏感信息）
-# 注意：数据文件可能包含仓库中的密钥、token等信息，建议忽略
-backend/DataProcessor/data/
-# 只忽略数据目录下的JSON文件，保留配置文件（package.json, tsconfig.json等）
-backend/DataProcessor/data/**/*.json
-# 数据文件格式
-*.xlsx
-*.csv
-*.xls
-# 但允许配置文件中的JSON（通过!来排除）
-!package.json
-!package-lock.json
-!tsconfig.json
-!tsconfig.node.json
-!*.config.json
-
-# MaxKB相关敏感信息
-# 注意：maxkb_uploader.py 中包含硬编码密码，建议移除或使用环境变量
-
-# Jupyter Notebook
-.ipynb_checkpoints
-# 只忽略数据目录下的notebook文件，如果需要保留某些notebook可以添加例外
-backend/DataProcessor/data/**/*.ipynb
-
-# pytest
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.nox/
-coverage.xml
-*.cover
-.hypothesis/
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# 其他
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg
-*.egg-info/
-dist/
-build/
-
