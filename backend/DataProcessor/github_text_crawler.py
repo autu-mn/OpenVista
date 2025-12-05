@@ -400,81 +400,9 @@ class GitHubTextCrawler:
         return []
     
     def calculate_fallback_metrics(self, owner, repo, repo_info):
-        """当 OpenDigger 数据不可用时，从 GitHub API 获取实时统计数据作为备用指标"""
-        print(f"  正在生成备用时序指标...")
-        
-        if not repo_info:
-            print(f"  ⚠ 无法获取仓库信息，无法生成备用指标")
-            return {}
-        
-        fallback_metrics = {}
-        
-        # 从 repo_info 获取当前统计数据
-        current_stars = repo_info.get('stars', 0)
-        current_forks = repo_info.get('forks', 0)
-        current_watchers = repo_info.get('watchers', 0)
-        current_open_issues = repo_info.get('open_issues', 0)
-        
-        # 获取创建时间
-        created_at = repo_info.get('created_at', '')
-        if not created_at:
-            print(f"  ⚠ 无法获取仓库创建时间，无法生成备用指标")
-            return {}
-        
-        from datetime import datetime
-        try:
-            created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            now = datetime.now(created_date.tzinfo)
-            
-            # 计算从创建到现在的月数
-            months_since_creation = ((now.year - created_date.year) * 12 + 
-                                    (now.month - created_date.month))
-            
-            if months_since_creation <= 0:
-                months_since_creation = 1
-            
-            # 生成月度估算数据（使用平方根增长模型，更符合开源项目增长曲线）
-            print(f"  生成从 {created_date.strftime('%Y-%m')} 到 {now.strftime('%Y-%m')} 的估算数据...")
-            
-            stars_data = {}
-            forks_data = {}
-            watchers_data = {}
-            issues_data = {}
-            
-            current_date = created_date
-            for i in range(min(months_since_creation + 1, 120)):  # 最多10年数据
-                month_key = current_date.strftime('%Y-%m')
-                progress = (i + 1) / (months_since_creation + 1)
-                
-                # 使用平方根增长模型
-                sqrt_progress = progress ** 0.5
-                
-                stars_data[month_key] = max(1, int(current_stars * sqrt_progress))
-                forks_data[month_key] = max(0, int(current_forks * sqrt_progress))
-                watchers_data[month_key] = max(1, int(current_watchers * sqrt_progress))
-                issues_data[month_key] = max(0, int(current_open_issues * progress))
-                
-                # 移到下个月
-                if current_date.month == 12:
-                    current_date = current_date.replace(year=current_date.year + 1, month=1)
-                else:
-                    current_date = current_date.replace(month=current_date.month + 1)
-            
-            # 添加到 fallback 数据
-            fallback_metrics['Stars数(估算)'] = stars_data
-            fallback_metrics['Fork数(估算)'] = forks_data
-            fallback_metrics['Watcher数(估算)'] = watchers_data
-            fallback_metrics['开放Issue数(估算)'] = issues_data
-            
-            print(f"  ✓ 生成了 {len(fallback_metrics)} 个备用指标，每个包含 {len(stars_data)} 个月度数据点")
-            
-        except Exception as e:
-            print(f"  ⚠ 生成备用指标失败: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return {}
-        
-        return fallback_metrics
+        """禁止生成估算数据，只使用真实数据"""
+        print(f"  ⚠ 不生成估算数据，只使用真实数据源")
+        return {}
     
     def clean_text_for_segmentation(self, text):
         if not text:
@@ -550,13 +478,26 @@ class GitHubTextCrawler:
         print(f"  标签数: {len(all_data['labels'])}")
         print(f"  贡献者数: {len(all_data['contributors'])}")
         
+        # 获取 GitHub API 补充指标
+        if progress_callback:
+            progress_callback(5, '获取GitHub API指标', '正在获取Issue/PR/Commit指标...', 80)
+        print("\n[5/6] 获取 GitHub API 指标...")
+        try:
+            from .github_api_metrics import GitHubAPIMetrics
+            github_api = GitHubAPIMetrics()
+            github_metrics = github_api.get_all_metrics(owner, repo)
+            all_data['github_api_metrics'] = github_metrics
+            print(f"  ✓ GitHub API 指标获取成功")
+        except Exception as e:
+            print(f"  ⚠ GitHub API 指标获取失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            all_data['github_api_metrics'] = {}
+        
+        # 不再生成估算数据
         if missing_metrics:
-            if progress_callback:
-                progress_callback(5, '计算备用指标', '正在计算备用指标...', 85)
-            print("\n[额外] 计算备用指标...")
-            print("\n[6/6] 计算备用指标...")
-            fallback_metrics = self.calculate_fallback_metrics(owner, repo, all_data.get('repo_info'))
-            all_data['fallback_metrics'] = fallback_metrics
+            print(f"\n  ⚠ 以下指标在 OpenDigger 中缺失: {', '.join(missing_metrics)}")
+            print(f"  ℹ 系统将仅使用 GitHub API 获取的真实数据，不生成估算数据")
         
         print(f"\n{'='*60}")
         print("爬取完成！")

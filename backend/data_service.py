@@ -42,7 +42,7 @@ class DataService:
                     'opendigger_Star数': {'key': 'Star数', 'color': '#FFD700', 'unit': '个'},
                     'opendigger_Fork数': {'key': 'Fork数', 'color': '#00ff88', 'unit': '个'},
                     'opendigger_活跃度': {'key': '活跃度', 'color': '#7b61ff', 'unit': ''},
-                    'opendigger_影响力': {'key': '影响力', 'color': '#ff6b9d', 'unit': ''},
+                    'opendigger_OpenRank': {'key': '影响力', 'color': '#ff6b9d', 'unit': ''},
                 }
             },
             'development': {
@@ -342,10 +342,20 @@ class DataService:
                 missing_count = len(missing_indices)
                 missing_ratio = missing_count / total_points if total_points > 0 else 1.0
                 
-                # 如果缺失值超过80%，跳过该指标（视为没有爬取到）
-                if missing_ratio > 0.8:
-                    print(f"  跳过指标 {metric_config['key']}: 缺失率 {missing_ratio*100:.1f}% > 80%")
+                # 重要指标（OpenRank）不跳过，即使缺失率高
+                important_keywords = ['openrank', 'OpenRank', '影响力']
+                is_important = any(keyword in metric_full_key for keyword in important_keywords)
+                
+                # 如果缺失值超过95%且不是重要指标，跳过该指标
+                if missing_ratio > 0.95 and not is_important:
+                    print(f"  跳过指标 {metric_config['key']}: 缺失率 {missing_ratio*100:.1f}% > 95%")
                     continue
+                elif missing_ratio > 0.8:
+                    # 缺失率在80%-95%之间，显示警告但仍保留
+                    if is_important:
+                        print(f"  ⭐ 保留重要指标 {metric_config['key']}: 缺失率 {missing_ratio*100:.1f}%")
+                    else:
+                        print(f"  ⚠ 保留指标 {metric_config['key']}: 缺失率 {missing_ratio*100:.1f}%")
                 
                 # 检查是否有有效数据
                 if any(v is not None for v in aligned_data):

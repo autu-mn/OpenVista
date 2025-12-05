@@ -120,23 +120,34 @@ class DataProcessor:
             if has_openrank:
                 print(f"  ✓ 已获取 OpenRank 指标数据")
         
-        if self.data.get('fallback_metrics'):
-            print(f"  处理备用指标...")
-            for metric_name, metric_data in self.data['fallback_metrics'].items():
-                if isinstance(metric_data, dict):
-                    timeseries_dict[f'fallback_{metric_name}'] = {'raw': metric_data}
-                    print(f"    - {metric_name}: {len(metric_data)} 个数据点")
-                elif isinstance(metric_data, list) and len(metric_data) > 0:
-                    raw_data = {}
-                    for item in metric_data:
-                        if isinstance(item, dict):
-                            date = item.get('date') or item.get('month') or item.get('time')
-                            value = item.get('value') or item.get('count')
-                            if date and value is not None:
-                                raw_data[str(date)] = value
-                    if raw_data:
-                        timeseries_dict[f'fallback_{metric_name}'] = {'raw': raw_data}
-                        print(f"    - {metric_name}: {len(raw_data)} 个数据点")
+        # 处理 GitHub API 指标
+        if self.data.get('github_api_metrics'):
+            print(f"  处理 GitHub API 指标...")
+            github_metrics = self.data['github_api_metrics']
+            
+            # 处理月度提交数
+            if 'github_api_commits' in github_metrics:
+                monthly_commits = github_metrics['github_api_commits'].get('monthly_commits', {})
+                if monthly_commits:
+                    timeseries_dict['github_api_代码提交数'] = {'raw': monthly_commits}
+                    print(f"    - 代码提交数: {len(monthly_commits)} 个数据点")
+            
+            # 处理聚合指标（作为单点数据存储，供后续使用）
+            if 'github_api_aggregated' in github_metrics:
+                agg = github_metrics['github_api_aggregated']
+                if agg.get('avg_issue_response_days'):
+                    print(f"    - Issue平均响应时间: {agg['avg_issue_response_days']:.1f} 天")
+                if agg.get('avg_issue_resolution_days'):
+                    print(f"    - Issue平均解决时长: {agg['avg_issue_resolution_days']:.1f} 天")
+                if agg.get('avg_pr_processing_days'):
+                    print(f"    - PR平均处理时长: {agg['avg_pr_processing_days']:.1f} 天")
+                if agg.get('total_contributors'):
+                    print(f"    - 总贡献者: {agg['total_contributors']} 人")
+                if agg.get('inactive_contributors'):
+                    print(f"    - 不活跃贡献者: {agg['inactive_contributors']} 人")
+        
+        # 不再处理估算数据（fallback_metrics）
+        # 只使用真实数据源：OpenDigger 和 GitHub API
         
         print(f"  总共处理了 {len(timeseries_dict)} 个指标")
         

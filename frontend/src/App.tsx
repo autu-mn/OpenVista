@@ -76,6 +76,35 @@ function App() {
         console.warn('时序数据获取失败:', timeseriesData.error)
       }
       
+      // 从时序数据中提取最新的 OpenRank 值
+      let latestOpenRank: number | undefined
+      if (timeseriesData.groups) {
+        for (const [groupKey, groupData] of Object.entries(timeseriesData.groups)) {
+          if (groupData.metrics) {
+            for (const [metricKey, metricData] of Object.entries(groupData.metrics)) {
+              if (metricKey.includes('OpenRank') || metricKey.includes('影响力')) {
+                const dataArray = (metricData as any).data
+                if (dataArray && Array.isArray(dataArray)) {
+                  for (let i = dataArray.length - 1; i >= 0; i--) {
+                    if (dataArray[i] !== null && dataArray[i] !== undefined) {
+                      latestOpenRank = dataArray[i]
+                      break
+                    }
+                  }
+                }
+                break
+              }
+            }
+          }
+          if (latestOpenRank !== undefined) break
+        }
+      }
+      
+      // 将 OpenRank 值添加到 repoInfo
+      if (latestOpenRank !== undefined && summary.repoInfo) {
+        setRepoInfo({ ...summary.repoInfo, openrank: latestOpenRank })
+      }
+      
       // 获取Issue数据
       const issuesResponse = await fetch(`/api/issues/${encodeURIComponent(repoKey)}`)
       const issuesData = await issuesResponse.json()

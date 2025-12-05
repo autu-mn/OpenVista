@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Star, GitFork, Eye, Calendar, Code, Users, Tag, ExternalLink } from 'lucide-react'
+import { Star, GitFork, Eye, Calendar, Code, Users, Tag, ExternalLink, TrendingUp } from 'lucide-react'
 
 interface RepoInfo {
   full_name: string
@@ -14,13 +14,15 @@ interface RepoInfo {
   updated_at: string
   license?: string
   topics?: string[]
+  openrank?: number  // OpenRank 评分
 }
 
 interface RepoHeaderProps {
   repoInfo: RepoInfo
+  openRankValue?: number  // 从时序数据中获取的最新 OpenRank 值
 }
 
-export default function RepoHeader({ repoInfo }: RepoHeaderProps) {
+export default function RepoHeader({ repoInfo, openRankValue }: RepoHeaderProps) {
   const formatDate = (dateStr: string) => {
     if (!dateStr) return '未知'
     const date = new Date(dateStr)
@@ -34,6 +36,10 @@ export default function RepoHeader({ repoInfo }: RepoHeaderProps) {
       return (num / 1000).toFixed(1) + 'K'
     }
     return num.toString()
+  }
+
+  const formatOpenRank = (value: number) => {
+    return value.toFixed(2)
   }
 
   return (
@@ -80,6 +86,37 @@ export default function RepoHeader({ repoInfo }: RepoHeaderProps) {
           </motion.p>
         )}
       </div>
+
+      {/* OpenRank 评分 - 如果存在则显示 */}
+      {openRankValue !== undefined && openRankValue > 0 && (
+        <motion.div
+          className="mb-6 p-6 bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-red-500/10 rounded-xl border-2 border-amber-500/30"
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.2 }}
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="p-4 bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl shadow-lg">
+                <TrendingUp className="w-8 h-8 text-white" />
+              </div>
+              <div>
+                <div className="text-sm text-cyber-text-secondary font-medium mb-1">OpenRank 影响力评分</div>
+                <div className="text-4xl font-bold bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 bg-clip-text text-transparent">
+                  {formatOpenRank(openRankValue)}
+                </div>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-cyber-text-secondary mb-2">全球开源项目影响力排名</div>
+              <div className="inline-flex items-center gap-2 px-3 py-1 bg-amber-500/20 rounded-full">
+                <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse"></span>
+                <span className="text-sm font-medium text-amber-500">活跃监测中</span>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* 统计数据网格 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
