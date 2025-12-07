@@ -118,7 +118,7 @@ class DataProcessor:
                             print(f"    - {metric_name}: {len(raw_data)} 个数据点")
             
             if has_openrank:
-                print(f"  ✓ 已获取 OpenRank 指标数据")
+          x      print(f"  ✓ 已获取 OpenRank 指标数据")
         
         # 处理 GitHub API 指标
         if self.data.get('github_api_metrics'):

@@ -164,7 +164,7 @@ class DataService:
         # 加载时序数据
         if os.path.exists(timeseries_file):
             try:
-                with open(timeseries_file, 'r', encoding='utf-8') as f:
+            with open(timeseries_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     if isinstance(data, dict):
                         self.loaded_timeseries[repo_key] = data
@@ -183,8 +183,8 @@ class DataService:
         # 加载文本数据
         if os.path.exists(text_file):
             try:
-                with open(text_file, 'r', encoding='utf-8') as f:
-                    self.loaded_text[repo_key] = json.load(f)
+            with open(text_file, 'r', encoding='utf-8') as f:
+                self.loaded_text[repo_key] = json.load(f)
             except Exception as e:
                 print(f"加载文本数据失败 {repo_key}: {e}")
     

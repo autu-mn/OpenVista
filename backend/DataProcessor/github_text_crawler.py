@@ -82,8 +82,8 @@ class GitHubTextCrawler:
     
     def switch_token(self):
         if len(self.tokens) > 1:
-            self.current_token_index = (self.current_token_index + 1) % len(self.tokens)
-            self.token = self.tokens[self.current_token_index]
+        self.current_token_index = (self.current_token_index + 1) % len(self.tokens)
+        self.token = self.tokens[self.current_token_index]
             self.headers['Authorization'] = f'token {self.token}'
     
     def check_rate_limit(self):
@@ -108,9 +108,9 @@ class GitHubTextCrawler:
                 elif response.status_code == 403:
                     if attempt < max_retries - 1:
                         self.switch_token()
-                        time.sleep(2)
-                        continue
-                    return response
+                            time.sleep(2)
+                            continue
+                return response
             except requests.exceptions.SSLError as e:
                 if attempt < max_retries - 1:
                     print(f"SSL错误，重试中 ({attempt + 1}/{max_retries})...")
@@ -130,7 +130,7 @@ class GitHubTextCrawler:
         for attempt in range(max_retries):
             try:
                 response = requests.get(url, timeout=15, verify=True)
-                if response.status_code == 200:
+        if response.status_code == 200:
                     return response.text
             except requests.exceptions.SSLError as e:
                 if attempt < max_retries - 1:
@@ -298,7 +298,7 @@ class GitHubTextCrawler:
                 if depth == 0:
                     print(f"  已达到文件数限制 ({max_files})，停止爬取")
                 break
-                
+            
             if item['type'] == 'file':
                 file_ext = os.path.splitext(item['name'])[1].lower()
                 if file_ext in ['.md', '.txt', '.rst', '.adoc']:
@@ -320,7 +320,7 @@ class GitHubTextCrawler:
                                                        depth=depth + 1, 
                                                        max_depth=max_depth)
                         docs_files.extend(sub_docs)
-        
+                
         if depth == 0:
             print(f"  获取到 {len(docs_files)} 个文档文件")
         return docs_files
