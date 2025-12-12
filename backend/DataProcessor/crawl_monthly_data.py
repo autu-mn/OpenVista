@@ -41,26 +41,94 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
     monthly_crawler = MonthlyCrawler()
     text_crawler = GitHubTextCrawler()
     
-    # ========== 步骤1: 爬取指标数据（数字指标）==========
-    print("[1/4] 爬取指标数据（OpenDigger数字指标）...")
+    # ========== 步骤1: 爬取指标数据（数字指标）和仓库信息==========
+    print("[1/4] 爬取指标数据和仓库信息...")
+    
+    # 获取仓库信息和标签（用于面板展示）
+    print("  → 获取仓库信息和标签...")
+    repo_info_basic = text_crawler.get_repo_info(owner, repo)
+    labels = text_crawler.get_labels(owner, repo)
+    if repo_info_basic:
+        print(f"  ✓ 获取了仓库信息: {repo_info_basic.get('name', '')}")
+        print(f"    - 描述: {repo_info_basic.get('description', '无')[:50]}...")
+        print(f"    - 主题: {', '.join(repo_info_basic.get('topics', [])[:5])}")
+        print(f"    - 标签: {len(labels) if labels else 0} 个")
+    else:
+        print("  ⚠ 未能获取仓库信息")
+    
+    # 获取OpenDigger指标数据
+    print("  → 获取OpenDigger数字指标...")
     opendigger = OpenDiggerMetrics()
     opendigger_data, missing_metrics = opendigger.get_metrics(owner, repo)
     print(f"  ✓ 获取了 {len(opendigger_data)} 个OpenDigger指标")
     if missing_metrics:
         print(f"  ⚠ 缺失指标: {', '.join(missing_metrics[:5])}{'...' if len(missing_metrics) > 5 else ''}")
     
+    # 生成月份列表（用于补充缺失指标）
+    monthly_crawler = MonthlyCrawler()
+    months = monthly_crawler.generate_month_list(owner, repo)
+    
+    # 使用GitHub API补充缺失的指标（优先级：OpenDigger > GitHub API > 0填充）
+    if missing_metrics:
+        print(f"\n  → 使用GitHub API补充缺失指标（优先级策略）...")
+        from .github_metrics_supplement import GitHubMetricsSupplement
+        supplement = GitHubMetricsSupplement()
+        supplemented_metrics = supplement.supplement_missing_metrics(owner, repo, opendigger_data, months)
+        
+        # 合并补充的指标到OpenDigger数据中
+        for metric_name, metric_data in supplemented_metrics.items():
+            if metric_name not in opendigger_data:
+                # 完全缺失的指标，直接添加
+                opendigger_data[metric_name] = metric_data
+                print(f"  ✓ 已用GitHub API补充（完全缺失）: {metric_name}")
+            else:
+                # 部分缺失的指标，更新缺失的月份
+                opendigger_data[metric_name] = metric_data
+                print(f"  ✓ 已用GitHub API补充（部分缺失）: {metric_name}")
+    
+    print(f"  ✓ 指标数据准备完成（OpenDigger: {len(opendigger_data)} 个，已补充缺失部分）")
+    
     # ========== 步骤2: 爬取描述文本（预处理后，上传到知识库）==========
-    print("\n[2/4] 爬取描述文本（README、LICENSE、文档等）...")
-    static_docs = {
-        'repo_info': text_crawler.get_repo_info(owner, repo),
-        'readme': text_crawler.get_readme(owner, repo),
-        'license': text_crawler.get_license_file(owner, repo),
-        'docs_files': text_crawler.get_docs_files(owner, repo, max_files=30, max_depth=2),
-        'important_md_files': text_crawler.get_important_md_files(owner, repo, max_files=10),
-        'all_doc_files': text_crawler.get_all_markdown_files(owner, repo, max_files=50, max_depth=3),
-        'config_files': text_crawler.get_config_files(owner, repo)
-    }
-    print(f"  ✓ 获取了静态文档")
+    print("\n[2/4] 爬取描述文本（README、LICENSE、文档等，优化：最多20个文档）...")
+    # 使用并发请求提升速度
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    def fetch_static_docs():
+        """并发获取静态文档"""
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {
+                'repo_info': executor.submit(text_crawler.get_repo_info, owner, repo),
+                'readme': executor.submit(text_crawler.get_readme, owner, repo),
+                'license': executor.submit(text_crawler.get_license_file, owner, repo),
+                'important_md_files': executor.submit(text_crawler.get_important_md_files, owner, repo, max_files=10),
+                'config_files': executor.submit(text_crawler.get_config_files, owner, repo)
+            }
+            
+            results = {}
+            for key, future in futures.items():
+                try:
+                    results[key] = future.result(timeout=30)
+                except Exception as e:
+                    print(f"  ⚠ 获取{key}失败: {str(e)}")
+                    results[key] = None if key != 'important_md_files' else []
+            
+            # 获取文档文件（限制为20个，但保留重要文档）
+            # 先获取重要文档，再补充其他文档
+            important_docs = results.get('important_md_files', [])
+            remaining_count = max(0, 20 - len(important_docs))
+            
+            if remaining_count > 0:
+                docs_files = text_crawler.get_docs_files(owner, repo, max_files=remaining_count, max_depth=2)
+                results['docs_files'] = docs_files
+                results['all_doc_files'] = important_docs + docs_files[:remaining_count]
+            else:
+                results['docs_files'] = []
+                results['all_doc_files'] = important_docs[:20]
+            
+            return results
+    
+    static_docs = fetch_static_docs()
+    print(f"  ✓ 获取了静态文档（共 {len(static_docs.get('all_doc_files', []))} 个文档文件）")
     
     # 初始化LLM客户端（用于摘要生成）
     llm_client = None
@@ -116,25 +184,89 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
     
     # ========== 步骤4: 时序文本+时序指标，按照月份时序对齐 ==========
     print("\n[4/4] 时序对齐：合并时序文本和时序指标...")
-    processed_data = processor.process_monthly_data_for_model(monthly_data, opendigger_data)
+    # 确保所有25个指标都被包含，缺失的用0填充（用于模型训练）
+    complete_opendigger_metrics = processor._ensure_all_metrics(opendigger_data)
+    processed_data = processor.process_monthly_data_for_model(monthly_data, complete_opendigger_metrics)
     print(f"  ✓ 已完成时序对齐，共 {len(processed_data)} 个月的数据")
+    print(f"  ✓ 所有25个指标已保存（缺失的用0填充，用于模型训练）")
     
     # 保存所有数据
     print("\n  → 保存数据...")
     
-    # 保存原始月度数据
+    # 保存原始月度数据（确保所有25个指标都被保存，缺失的用0填充）
+    # 定义所有25个指标
+    all_metrics_config = {
+        'OpenRank': 'openrank',
+        '活跃度': 'activity',
+        'Star数': 'stars',
+        'Fork数': 'technical_fork',
+        '关注度': 'attention',
+        '参与者数': 'participants',
+        '新增贡献者': 'new_contributors',
+        '贡献者': 'contributors',
+        '不活跃贡献者': 'inactive_contributors',
+        '总线因子': 'bus_factor',
+        '新增Issue': 'issues_new',
+        '关闭Issue': 'issues_closed',
+        'Issue评论': 'issue_comments',
+        'Issue响应时间': 'issue_response_time',
+        'Issue解决时长': 'issue_resolution_duration',
+        'Issue存活时间': 'issue_age',
+        '变更请求': 'change_requests',
+        'PR接受数': 'change_requests_accepted',
+        'PR审查': 'change_requests_reviews',
+        'PR响应时间': 'change_request_response_time',
+        'PR处理时长': 'change_request_resolution_duration',
+        'PR存活时间': 'change_request_age',
+        '代码新增行数': 'code_change_lines_add',
+        '代码删除行数': 'code_change_lines_remove',
+        '代码变更总行数': 'code_change_lines_sum',
+    }
+    
+    # 提取时间范围（从有数据的指标中提取）
+    all_months = set()
+    for metric_name, metric_data in opendigger_data.items():
+        if isinstance(metric_data, dict):
+            all_months.update(metric_data.keys())
+    
+    # 为所有指标创建完整数据，缺失的用0填充（用于模型训练）
+    complete_opendigger_metrics = {}
+    for metric_display_name, metric_key in all_metrics_config.items():
+        raw_data = {}
+        
+        # 如果OpenDigger有该指标的数据，使用实际数据
+        if metric_display_name in opendigger_data:
+            metric_data = opendigger_data[metric_display_name]
+            if isinstance(metric_data, dict):
+                for date_str, value in metric_data.items():
+                    if len(date_str) >= 7:
+                        month_str = date_str[:7]
+                        raw_data[month_str] = value
+        
+        # 为所有月份填充数据（有数据的用实际值，没有的用0）
+        for month in sorted(all_months):
+            if len(month) >= 7:
+                month_str = month[:7]
+                if month_str not in raw_data:
+                    raw_data[month_str] = 0.0
+        
+        # 保存指标数据（即使全部是0也保存，用于模型训练）
+        if raw_data:
+            complete_opendigger_metrics[metric_display_name] = raw_data
+    
     raw_data_file = os.path.join(output_dir, 'raw_monthly_data.json')
     with open(raw_data_file, 'w', encoding='utf-8') as f:
         json.dump({
             'repo_info': repo_info,
             'monthly_data': monthly_data,
-            'opendigger_metrics': opendigger_data
+            'opendigger_metrics': complete_opendigger_metrics,  # 使用完整数据（包含0填充）
+            'opendigger_metrics_raw': opendigger_data  # 保留原始数据（不含0填充）
         }, f, ensure_ascii=False, indent=2)
     
     # 保存用于双塔模型的数据（时序对齐后的数据）
     processor.save_for_model(processed_data, output_dir)
     
-    # 保存元数据
+    # 保存元数据（包含仓库信息和标签）
     metadata = {
         'owner': owner,
         'repo': repo,
@@ -143,7 +275,9 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
         'max_per_month': max_per_month,
         'llm_summary_enabled': enable_llm_summary,
         'opendigger_metrics_count': len(opendigger_data),
-        'missing_opendigger_metrics': missing_metrics
+        'missing_opendigger_metrics': missing_metrics,
+        'repo_info': repo_info_basic if 'repo_info_basic' in locals() else None,
+        'labels': labels if 'labels' in locals() else []
     }
     
     metadata_file = os.path.join(output_dir, 'metadata.json')

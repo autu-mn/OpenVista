@@ -9,6 +9,7 @@ import StatsCard from './components/StatsCard'
 import ProjectSearch from './components/ProjectSearch'
 import HomePage from './components/HomePage'
 import RepoHeader from './components/RepoHeader'
+import OpenDiggerAnalysis from './components/OpenDiggerAnalysis'
 import type { DemoData, GroupedTimeSeriesData, IssueData, WaveData } from './types'
 
 function App() {
@@ -16,7 +17,7 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'timeseries' | 'issues' | 'analysis'>('timeseries')
+  const [activeTab, setActiveTab] = useState<'timeseries' | 'issues' | 'analysis' | 'opendigger'>('timeseries')
   const [currentProject, setCurrentProject] = useState<string>('')
   const [showHomePage, setShowHomePage] = useState(true)
   const [repoInfo, setRepoInfo] = useState<any>(null)
@@ -82,7 +83,7 @@ function App() {
         for (const [groupKey, groupData] of Object.entries(timeseriesData.groups)) {
           if (groupData.metrics) {
             for (const [metricKey, metricData] of Object.entries(groupData.metrics)) {
-              if (metricKey.includes('OpenRank') || metricKey.includes('影响力')) {
+              if (metricKey.includes('OpenRank')) {
                 const dataArray = (metricData as any).data
                 if (dataArray && Array.isArray(dataArray)) {
                   for (let i = dataArray.length - 1; i >= 0; i--) {
@@ -342,6 +343,12 @@ function App() {
             label="波动归因"
             badge={data?.waves?.length || 0}
           />
+          <TabButton
+            active={activeTab === 'opendigger'}
+            onClick={() => setActiveTab('opendigger')}
+            icon={<BarChart3 className="w-4 h-4" />}
+            label="OpenDigger 分析"
+          />
         </motion.div>
 
         {/* 主内容区 */}
@@ -357,6 +364,7 @@ function App() {
               <GroupedTimeSeriesChart 
                 data={data?.groupedTimeseries as GroupedTimeSeriesData}
                 onMonthClick={handleMonthClick}
+                repoKey={data?.repoKey}
               />
             </motion.div>
           )}
@@ -393,6 +401,23 @@ function App() {
                   setActiveTab('issues')
                 }}
               />
+            </motion.div>
+          )}
+          
+          {activeTab === 'opendigger' && (
+            <motion.div
+              key="opendigger"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              transition={{ duration: 0.3 }}
+            >
+              {currentProject && (() => {
+                const [owner, repo] = currentProject.includes('/') 
+                  ? currentProject.split('/') 
+                  : currentProject.replace('_', '/').split('/')
+                return <OpenDiggerAnalysis owner={owner} repo={repo} />
+              })()}
             </motion.div>
           )}
         </AnimatePresence>

@@ -35,11 +35,114 @@ class MonthlyDataProcessor:
                 self.llm_client = DeepSeekClient()
             except:
                 print("  ⚠ 无法初始化LLM客户端")
+        
+        # 定义所有25个指标（用于确保所有指标都被保存，缺失的用0填充）
+        self.all_metrics_list = [
+            'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数',
+            '新增贡献者', '贡献者', '不活跃贡献者', '总线因子',
+            '新增Issue', '关闭Issue', 'Issue评论', 'Issue响应时间', 'Issue解决时长', 'Issue存活时间',
+            '变更请求', 'PR接受数', 'PR审查', 'PR响应时间', 'PR处理时长', 'PR存活时间',
+            '代码新增行数', '代码删除行数', '代码变更总行数'
+        ]
+    
+    def _ensure_all_metrics(self, opendigger_metrics: Dict) -> Dict:
+        """
+        确保所有25个指标都存在
+        优先级：OpenDigger > GitHub API补充 > 0填充（用于模型训练）
+        
+        Args:
+            opendigger_metrics: OpenDigger返回的指标数据（可能已包含GitHub API补充的数据）
+            
+        Returns:
+            完整的指标数据（所有25个指标都存在）
+        """
+        complete_metrics = {}
+        
+        # 提取时间范围（从有数据的指标中提取）
+        all_months = set()
+        for metric_name, metric_data in opendigger_metrics.items():
+            if isinstance(metric_data, dict):
+                all_months.update(metric_data.keys())
+        
+        # 为所有指标创建完整数据
+        for metric_name in self.all_metrics_list:
+            if metric_name in opendigger_metrics:
+                # 有数据（OpenDigger或GitHub API补充），使用实际数据
+                metric_data = opendigger_metrics[metric_name]
+                if isinstance(metric_data, dict):
+                    # 为所有月份填充数据（缺失的用0）
+                    complete_data = {}
+                    for month in sorted(all_months):
+                        if len(month) >= 7:
+                            month_str = month[:7]
+                            # 优先使用实际数据，没有则用0
+                            complete_data[month_str] = metric_data.get(month_str, 0.0)
+                    complete_metrics[metric_name] = complete_data
+                else:
+                    # 非字典格式，创建全0数据
+                    complete_data = {}
+                    for month in sorted(all_months):
+                        if len(month) >= 7:
+                            month_str = month[:7]
+                            complete_data[month_str] = 0.0
+                    complete_metrics[metric_name] = complete_data
+            else:
+                # 没有数据（既没有OpenDigger也没有GitHub API补充），创建全0数据
+                complete_data = {}
+                for month in sorted(all_months):
+                    if len(month) >= 7:
+                        month_str = month[:7]
+                        complete_data[month_str] = 0.0
+                complete_metrics[metric_name] = complete_data
+        
+        return complete_metrics
+    
+    def _preprocess_text(self, text: str) -> str:
+        """
+        预处理文本内容，清理和格式化
+        """
+        if not text:
+            return ""
+        
+        # 1. 移除过多的空行（保留最多2个连续空行）
+        import re
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        
+        # 2. 移除行首行尾空白
+        lines = text.split('\n')
+        text = '\n'.join(line.rstrip() for line in lines)
+        
+        # 3. 移除Markdown中的HTML注释
+        text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+        
+        # 4. 移除代码块中的过长行（超过200字符的行可能是base64编码等，不适合作为知识库）
+        # 但保留代码块结构
+        lines = text.split('\n')
+        processed_lines = []
+        in_code_block = False
+        
+        for line in lines:
+            if line.strip().startswith('```'):
+                in_code_block = not in_code_block
+                processed_lines.append(line)
+            elif in_code_block and len(line) > 500:
+                # 跳过过长的行（可能是base64编码等）
+                continue
+            else:
+                processed_lines.append(line)
+        
+        text = '\n'.join(processed_lines)
+        
+        # 5. 移除URL中的敏感信息（可选）
+        # text = re.sub(r'https?://[^\s]+', '[URL]', text)
+        
+        return text.strip()
     
     def extract_static_texts(self, static_docs: Dict) -> Dict:
         """
         提取静态描述性文本（用于MaxKB）
         包括：README、文档文件等
+        会对文本进行预处理：清理、格式化、提取关键信息
         """
         static_texts = {
             'repo_info': static_docs.get('repo_info', {}),
@@ -49,47 +152,68 @@ class MonthlyDataProcessor:
             'config_files': []
         }
         
-        # 提取README
+        # 提取README并预处理
         readme_data = static_docs.get('readme')
         if readme_data:
             if isinstance(readme_data, list):
-                # 多个README，取第一个
-                static_texts['readme'] = readme_data[0].get('content', '')
+                # 多个README，合并并预处理
+                readme_content = '\n\n'.join(
+                    item.get('content', '') for item in readme_data if item.get('content')
+                )
+                static_texts['readme'] = self._preprocess_text(readme_content)
             elif isinstance(readme_data, dict):
-                static_texts['readme'] = readme_data.get('content', '')
+                readme_content = readme_data.get('content', '')
+                static_texts['readme'] = self._preprocess_text(readme_content)
         
-        # 提取LICENSE
+        # 提取LICENSE并预处理
         license_data = static_docs.get('license')
         if license_data:
-            static_texts['license'] = license_data.get('content', '')
+            license_content = license_data.get('content', '')
+            static_texts['license'] = self._preprocess_text(license_content)
         
         # 提取文档文件（合并所有来源）
         docs_files = static_docs.get('docs_files', [])
         important_md = static_docs.get('important_md_files', [])
         all_docs = static_docs.get('all_doc_files', [])
         
-        # 合并所有文档，去重（按path）
+        # 合并所有文档，去重（按path），并预处理内容
         all_doc_dict = {}
         for doc_list in [docs_files, important_md, all_docs]:
             for doc in doc_list:
                 path = doc.get('path', '')
                 if path and path not in all_doc_dict:
-                    all_doc_dict[path] = {
-                        'name': doc.get('name', 'unknown.md'),
-                        'path': path,
-                        'content': doc.get('content', '')
-                    }
+                    content = doc.get('content', '')
+                    # 预处理文档内容
+                    processed_content = self._preprocess_text(content)
+                    
+                    # 只保留有实际内容的文档（至少50个字符）
+                    if len(processed_content) >= 50:
+                        all_doc_dict[path] = {
+                            'name': doc.get('name', 'unknown.md'),
+                            'path': path,
+                            'content': processed_content
+                        }
         
         static_texts['docs'] = list(all_doc_dict.values())
         
-        # 提取配置文件
+        # 提取配置文件并预处理
         config_files = static_docs.get('config_files', [])
         for config in config_files:
+            content = config.get('content', '')
+            processed_content = self._preprocess_text(content)
+            
+            # 配置文件也保留（即使内容较短）
             static_texts['config_files'].append({
                 'name': config.get('name', ''),
                 'path': config.get('path', ''),
-                'content': config.get('content', '')
+                'content': processed_content
             })
+        
+        print(f"  ✓ 文本预处理完成:")
+        print(f"    - README: {'✓' if static_texts['readme'] else '✗'}")
+        print(f"    - LICENSE: {'✓' if static_texts['license'] else '✗'}")
+        print(f"    - 文档文件: {len(static_texts['docs'])} 个（已预处理）")
+        print(f"    - 配置文件: {len(static_texts['config_files'])} 个（已预处理）")
         
         return static_texts
     
@@ -104,12 +228,26 @@ class MonthlyDataProcessor:
               'full_text': '完整文本',
               'llm_summary': 'LLM摘要',
               'breakdown': {...}
+            },
+            'opendigger_metrics': {
+              'OpenRank': 10.5,
+              '活跃度': 20.3,
+              ... (所有25个指标，缺失的用0填充)
             }
           },
           ...
         }
         """
         processed = {}
+        
+        # 定义所有25个指标（用于确保所有指标都被保存，缺失的用0填充）
+        all_metrics_list = [
+            'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数',
+            '新增贡献者', '贡献者', '不活跃贡献者', '总线因子',
+            '新增Issue', '关闭Issue', 'Issue评论', 'Issue响应时间', 'Issue解决时长', 'Issue存活时间',
+            '变更请求', 'PR接受数', 'PR审查', 'PR响应时间', 'PR处理时长', 'PR存活时间',
+            '代码新增行数', '代码删除行数', '代码变更总行数'
+        ]
         
         for month, month_data in monthly_data.items():
             # 提取数值特征
@@ -121,9 +259,25 @@ class MonthlyDataProcessor:
             # 生成LLM摘要
             llm_summary = self._generate_llm_summary(month_data, full_text)
             
+            # 提取该月的所有OpenDigger指标（缺失的用0填充，用于模型训练）
+            month_metrics = {}
+            for metric_name in all_metrics_list:
+                if metric_name in opendigger_metrics:
+                    metric_data = opendigger_metrics[metric_name]
+                    if isinstance(metric_data, dict):
+                        # 获取该月的值，如果没有则用0
+                        value = metric_data.get(month, 0.0)
+                        month_metrics[metric_name] = float(value) if value is not None else 0.0
+                    else:
+                        month_metrics[metric_name] = 0.0
+                else:
+                    # 指标不存在，用0填充
+                    month_metrics[metric_name] = 0.0
+            
             # 组织数据
             processed[month] = {
                 'timeseries_features': timeseries_features,
+                'opendigger_metrics': month_metrics,  # 保存所有25个指标，缺失的用0填充
                 'text_data': {
                     'full_text': full_text,
                     'llm_summary': llm_summary,

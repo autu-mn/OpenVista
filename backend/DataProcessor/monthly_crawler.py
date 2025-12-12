@@ -528,9 +528,9 @@ class MonthlyCrawler:
         
         return months
     
-    def crawl_all_months(self, owner: str, repo: str, max_per_month: int = 3, progress_callback=None) -> Dict:
+    def crawl_all_months(self, owner: str, repo: str, max_per_month: int = 3, progress_callback=None, use_graphql: bool = True) -> Dict:
         """
-        爬取所有月份的数据
+        爬取所有月份的数据（使用GraphQL API和并发请求优化）
         返回格式：
         {
           'monthly_data': {
@@ -543,6 +543,8 @@ class MonthlyCrawler:
         """
         print(f"\n{'='*60}")
         print(f"开始按月爬取仓库: {owner}/{repo}")
+        if use_graphql:
+            print(f"使用 GraphQL API + 并发请求（优化模式）")
         print(f"{'='*60}\n")
         
         # 获取仓库信息
@@ -557,57 +559,107 @@ class MonthlyCrawler:
         monthly_data = {}
         total_months = len(months)
         
-        for idx, month in enumerate(months):
-            if progress_callback:
-                progress = int((idx / total_months) * 100)
-                progress_callback(idx, f'爬取 {month}', f'正在爬取 {month} 的数据...', progress)
+        if use_graphql:
+            # 使用GraphQL API批量爬取（并发）
+            from .github_graphql_crawler import GitHubGraphQLCrawler
+            graphql_crawler = GitHubGraphQLCrawler()
             
-            print(f"\n[{idx+1}/{total_months}] 爬取 {month}...")
+            # 并发爬取所有月份（分批处理，避免过多并发）
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             
-            month_data = {
-                'month': month,
-                'issues': [],
-                'prs': [],
-                'commits': [],
-                'releases': []
-            }
+            def crawl_single_month(month: str) -> tuple:
+                """爬取单个月份的数据"""
+                try:
+                    result = graphql_crawler.crawl_month_batch(owner, repo, month, max_per_month)
+                    return month, {
+                        'month': month,
+                        'issues': result.get('issues', []),
+                        'prs': result.get('prs', []),
+                        'commits': result.get('commits', []),
+                        'releases': result.get('releases', [])
+                    }
+                except Exception as e:
+                    print(f"  ⚠ 爬取 {month} 失败: {str(e)}")
+                    return month, {
+                        'month': month,
+                        'issues': [],
+                        'prs': [],
+                        'commits': [],
+                        'releases': []
+                    }
             
-            # 爬取Issues（轮换token）
-            if len(self.tokens) > 1:
-                self.switch_token()
-            print(f"  - Issues...")
-            issues = self.crawl_issues_by_month(owner, repo, month, max_per_month)
-            month_data['issues'] = issues
-            print(f"    获取 {len(issues)} 个Issues")
-            
-            # 爬取PRs（轮换token）
-            if len(self.tokens) > 1:
-                self.switch_token()
-            print(f"  - PRs...")
-            prs = self.crawl_prs_by_month(owner, repo, month, max_per_month)
-            month_data['prs'] = prs
-            print(f"    获取 {len(prs)} 个PRs")
-            
-            # 爬取Commits（轮换token）
-            if len(self.tokens) > 1:
-                self.switch_token()
-            print(f"  - Commits...")
-            commits = self.crawl_commits_by_month(owner, repo, month, max_per_month)
-            month_data['commits'] = commits
-            print(f"    获取 {len(commits)} 个Commits")
-            
-            # 爬取Releases（轮换token）
-            if len(self.tokens) > 1:
-                self.switch_token()
-            print(f"  - Releases...")
-            releases = self.crawl_releases_by_month(owner, repo, month)
-            month_data['releases'] = releases
-            print(f"    获取 {len(releases)} 个Releases")
-            
-            monthly_data[month] = month_data
-            
-            # 避免rate limit
-            time.sleep(1)
+            # 使用线程池并发爬取（最多5个并发）
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(crawl_single_month, month): month for month in months}
+                
+                completed = 0
+                for future in as_completed(futures):
+                    completed += 1
+                    month, month_data = future.result()
+                    monthly_data[month] = month_data
+                    
+                    if progress_callback:
+                        progress = int((completed / total_months) * 100)
+                        progress_callback(
+                            completed - 1,
+                            f'爬取 {month}',
+                            f'已获取 {len(month_data["issues"])} Issues, {len(month_data["prs"])} PRs, {len(month_data["commits"])} Commits, {len(month_data["releases"])} Releases',
+                            progress
+                        )
+                    print(f"  [{completed}/{total_months}] {month}: {len(month_data['issues'])} Issues, {len(month_data['prs'])} PRs, {len(month_data['commits'])} Commits, {len(month_data['releases'])} Releases")
+        else:
+            # 使用REST API（原始方法，串行）
+            for idx, month in enumerate(months):
+                if progress_callback:
+                    progress = int((idx / total_months) * 100)
+                    progress_callback(idx, f'爬取 {month}', f'正在爬取 {month} 的数据...', progress)
+                
+                print(f"\n[{idx+1}/{total_months}] 爬取 {month}...")
+                
+                month_data = {
+                    'month': month,
+                    'issues': [],
+                    'prs': [],
+                    'commits': [],
+                    'releases': []
+                }
+                
+                # 爬取Issues（轮换token）
+                if len(self.tokens) > 1:
+                    self.switch_token()
+                print(f"  - Issues...")
+                issues = self.crawl_issues_by_month(owner, repo, month, max_per_month)
+                month_data['issues'] = issues
+                print(f"    获取 {len(issues)} 个Issues")
+                
+                # 爬取PRs（轮换token）
+                if len(self.tokens) > 1:
+                    self.switch_token()
+                print(f"  - PRs...")
+                prs = self.crawl_prs_by_month(owner, repo, month, max_per_month)
+                month_data['prs'] = prs
+                print(f"    获取 {len(prs)} 个PRs")
+                
+                # 爬取Commits（轮换token）
+                if len(self.tokens) > 1:
+                    self.switch_token()
+                print(f"  - Commits...")
+                commits = self.crawl_commits_by_month(owner, repo, month, max_per_month)
+                month_data['commits'] = commits
+                print(f"    获取 {len(commits)} 个Commits")
+                
+                # 爬取Releases（轮换token）
+                if len(self.tokens) > 1:
+                    self.switch_token()
+                print(f"  - Releases...")
+                releases = self.crawl_releases_by_month(owner, repo, month)
+                month_data['releases'] = releases
+                print(f"    获取 {len(releases)} 个Releases")
+                
+                monthly_data[month] = month_data
+                
+                # 避免rate limit
+                time.sleep(1)
         
         print(f"\n{'='*60}")
         print("按月爬取完成！")

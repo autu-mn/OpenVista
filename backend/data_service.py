@@ -42,16 +42,19 @@ class DataService:
                     'opendigger_Star数': {'key': 'Star数', 'color': '#FFD700', 'unit': '个'},
                     'opendigger_Fork数': {'key': 'Fork数', 'color': '#00ff88', 'unit': '个'},
                     'opendigger_活跃度': {'key': '活跃度', 'color': '#7b61ff', 'unit': ''},
-                    'opendigger_OpenRank': {'key': '影响力', 'color': '#ff6b9d', 'unit': ''},
+                    'opendigger_OpenRank': {'key': 'OpenRank', 'color': '#ff6b9d', 'unit': ''},
                 }
             },
             'development': {
                 'name': '开发活动',
-                'description': 'Commit、PR 等反映开发活跃度的指标',
+                'description': 'PR、代码变更等反映开发活跃度的指标',
                 'metrics': {
-                    'opendigger_代码提交数': {'key': '代码提交数', 'color': '#00f5d4', 'unit': '次'},
                     'opendigger_PR接受数': {'key': 'PR接受数', 'color': '#4CAF50', 'unit': '个'},
-                    'opendigger_PR拒绝数': {'key': 'PR拒绝数', 'color': '#ff6b9d', 'unit': '个'},
+                    'opendigger_变更请求': {'key': '变更请求', 'color': '#2196F3', 'unit': '个'},
+                    'opendigger_PR审查': {'key': 'PR审查', 'color': '#FF9800', 'unit': '次'},
+                    'opendigger_代码新增行数': {'key': '代码新增行数', 'color': '#00f5d4', 'unit': '行'},
+                    'opendigger_代码删除行数': {'key': '代码删除行数', 'color': '#ff6b9d', 'unit': '行'},
+                    'opendigger_代码变更总行数': {'key': '代码变更总行数', 'color': '#9C27B0', 'unit': '行'},
                 }
             },
             'issues': {
@@ -60,6 +63,7 @@ class DataService:
                 'metrics': {
                     'opendigger_新增Issue': {'key': '新增Issue', 'color': '#2196F3', 'unit': '个'},
                     'opendigger_关闭Issue': {'key': '关闭Issue', 'color': '#4CAF50', 'unit': '个'},
+                    'opendigger_Issue评论': {'key': 'Issue评论', 'color': '#9E9E9E', 'unit': '条'},
                 }
             },
             'contributors': {
@@ -67,6 +71,7 @@ class DataService:
                 'description': '参与者、新增贡献者等人员相关指标',
                 'metrics': {
                     'opendigger_参与者数': {'key': '参与者数', 'color': '#9C27B0', 'unit': '人'},
+                    'opendigger_贡献者': {'key': '贡献者', 'color': '#673AB7', 'unit': '人'},
                     'opendigger_新增贡献者': {'key': '新增贡献者', 'color': '#00f5d4', 'unit': '人'},
                     'opendigger_总线因子': {'key': '总线因子', 'color': '#FFD700', 'unit': ''},
                     'opendigger_不活跃贡献者': {'key': '不活跃贡献者', 'color': '#ff6b9d', 'unit': '人'},
@@ -88,6 +93,13 @@ class DataService:
                     'opendigger_PR响应时间': {'key': 'PR响应时间', 'color': '#00f5d4', 'unit': '小时'},
                     'opendigger_PR处理时长': {'key': 'PR处理时长', 'color': '#FFD700', 'unit': '小时'},
                     'opendigger_PR存活时间': {'key': 'PR存活时间', 'color': '#ff6b9d', 'unit': '小时'},
+                }
+            },
+            'statistics': {
+                'name': '统计指标',
+                'description': '关注度等统计指标',
+                'metrics': {
+                    'opendigger_关注度': {'key': '关注度', 'color': '#00BCD4', 'unit': ''},
                 }
             }
         }
@@ -164,7 +176,7 @@ class DataService:
         # 加载时序数据
         if os.path.exists(timeseries_file):
             try:
-            with open(timeseries_file, 'r', encoding='utf-8') as f:
+                with open(timeseries_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     if isinstance(data, dict):
                         self.loaded_timeseries[repo_key] = data
@@ -183,8 +195,8 @@ class DataService:
         # 加载文本数据
         if os.path.exists(text_file):
             try:
-            with open(text_file, 'r', encoding='utf-8') as f:
-                self.loaded_text[repo_key] = json.load(f)
+                with open(text_file, 'r', encoding='utf-8') as f:
+                    self.loaded_text[repo_key] = json.load(f)
             except Exception as e:
                 print(f"加载文本数据失败 {repo_key}: {e}")
     
@@ -343,7 +355,7 @@ class DataService:
                 missing_ratio = missing_count / total_points if total_points > 0 else 1.0
                 
                 # 重要指标（OpenRank）不跳过，即使缺失率高
-                important_keywords = ['openrank', 'OpenRank', '影响力']
+                important_keywords = ['openrank', 'OpenRank']
                 is_important = any(keyword in metric_full_key for keyword in important_keywords)
                 
                 # 如果缺失值超过95%且不是重要指标，跳过该指标
@@ -748,38 +760,47 @@ class DataService:
                     content = doc.get('content', '')
                     repo_info = {}
                     
-                    # 解析仓库信息
-                    lines = content.split('\n')
-                    for line in lines:
-                        if ':' in line:
-                            key, value = line.split(':', 1)
-                            key = key.strip()
-                            value = value.strip()
-                            
-                            if key == '仓库名称':
-                                repo_info['full_name'] = value
-                            elif key == '描述':
-                                repo_info['description'] = value
-                            elif key == '主页':
-                                repo_info['homepage'] = value
-                            elif key == '编程语言':
-                                repo_info['language'] = value
-                            elif key == 'Star数':
-                                repo_info['stars'] = int(value) if value.isdigit() else 0
-                            elif key == 'Fork数':
-                                repo_info['forks'] = int(value) if value.isdigit() else 0
-                            elif key == 'Watcher数':
-                                repo_info['watchers'] = int(value) if value.isdigit() else 0
-                            elif key == '开放Issue数':
-                                repo_info['open_issues'] = int(value) if value.isdigit() else 0
-                            elif key == '创建时间':
-                                repo_info['created_at'] = value
-                            elif key == '更新时间':
-                                repo_info['updated_at'] = value
-                            elif key == '许可证':
-                                repo_info['license'] = value
-                            elif key == '标签':
-                                repo_info['topics'] = [t.strip() for t in value.split(',') if t.strip()]
+                    # 尝试解析为JSON格式（新格式）
+                    try:
+                        repo_info = json.loads(content)
+                        # 确保字段名匹配前端期望
+                        if 'topics' in repo_info and isinstance(repo_info['topics'], list):
+                            repo_info['topics'] = repo_info['topics']
+                        if 'labels' in repo_info and isinstance(repo_info['labels'], list):
+                            repo_info['labels'] = repo_info['labels']
+                    except (json.JSONDecodeError, TypeError):
+                        # 如果不是JSON，尝试解析为文本格式（旧格式兼容）
+                        lines = content.split('\n')
+                        for line in lines:
+                            if ':' in line:
+                                key, value = line.split(':', 1)
+                                key = key.strip()
+                                value = value.strip()
+                                
+                                if key == '仓库名称':
+                                    repo_info['full_name'] = value
+                                elif key == '描述':
+                                    repo_info['description'] = value
+                                elif key == '主页':
+                                    repo_info['homepage'] = value
+                                elif key == '编程语言':
+                                    repo_info['language'] = value
+                                elif key == 'Star数':
+                                    repo_info['stars'] = int(value) if value.isdigit() else 0
+                                elif key == 'Fork数':
+                                    repo_info['forks'] = int(value) if value.isdigit() else 0
+                                elif key == 'Watcher数':
+                                    repo_info['watchers'] = int(value) if value.isdigit() else 0
+                                elif key == '开放Issue数':
+                                    repo_info['open_issues'] = int(value) if value.isdigit() else 0
+                                elif key == '创建时间':
+                                    repo_info['created_at'] = value
+                                elif key == '更新时间':
+                                    repo_info['updated_at'] = value
+                                elif key == '许可证':
+                                    repo_info['license'] = value
+                                elif key == '标签':
+                                    repo_info['topics'] = [t.strip() for t in value.split(',') if t.strip()]
                     
                     if repo_info:
                         summary['repoInfo'] = repo_info

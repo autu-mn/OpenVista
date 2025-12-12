@@ -1,15 +1,17 @@
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, Brush, ScatterChart, Scatter, ComposedChart, ReferenceDot
+  Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, Brush, ComposedChart
 } from 'recharts'
-import { Eye, EyeOff, ChevronDown, ChevronUp, Calendar, Maximize2, Minimize2, AlertCircle } from 'lucide-react'
+import { Eye, EyeOff, ChevronDown, ChevronUp, Calendar, Maximize2, Minimize2, AlertCircle, TrendingUp } from 'lucide-react'
 import type { GroupedTimeSeriesData, MetricGroupData } from '../types'
+import PredictionChart from './PredictionChart'
 
 interface GroupedTimeSeriesChartProps {
   data: GroupedTimeSeriesData
   onMonthClick: (month: string) => void
+  repoKey?: string
 }
 
 // 分组图标配置
@@ -22,10 +24,11 @@ const GROUP_ICONS: Record<string, string> = {
   pr_response: '🔄'
 }
 
-export default function GroupedTimeSeriesChart({ data, onMonthClick }: GroupedTimeSeriesChartProps) {
+export default function GroupedTimeSeriesChart({ data, onMonthClick, repoKey }: GroupedTimeSeriesChartProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['popularity', 'development']))
   const [hiddenMetrics, setHiddenMetrics] = useState<Set<string>>(new Set())
   const [focusedGroup, setFocusedGroup] = useState<string | null>(null)
+  const [predictionMetric, setPredictionMetric] = useState<{groupKey: string, metricKey: string, metricName: string} | null>(null)
 
   const toggleGroup = (groupKey: string) => {
     setExpandedGroups(prev => {
@@ -77,7 +80,7 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick }: GroupedTi
         }
         // 标记是否为缺失值
         if (metricInfo.missingIndices?.includes(index)) {
-          point[`${metricKey}_missing`] = true
+          point[`${metricKey}_missing`] = 1  // 使用数字而非boolean
         }
       })
       
@@ -167,38 +170,48 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick }: GroupedTi
                   const missingCount = metricInfo.missingIndices?.length || 0
                   
                   return (
-                    <button
-                      key={metricKey}
-                      onClick={() => toggleMetric(`${groupKey}-${metricKey}`)}
-                      className={`
-                        flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-all
-                        ${!isHidden
-                          ? 'bg-cyber-surface border-2'
-                          : 'bg-cyber-bg/50 border border-cyber-border opacity-50'
+                    <div key={metricKey} className="flex items-center gap-2">
+                      <button
+                        onClick={() => toggleMetric(`${groupKey}-${metricKey}`)}
+                        className={`
+                          flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-all
+                          ${!isHidden
+                            ? 'bg-cyber-surface border-2'
+                            : 'bg-cyber-bg/50 border border-cyber-border opacity-50'
+                          }
+                        `}
+                        style={{
+                          borderColor: !isHidden ? metricInfo.color : undefined
+                        }}
+                      >
+                        {!isHidden 
+                          ? <Eye className="w-3 h-3" /> 
+                          : <EyeOff className="w-3 h-3" />
                         }
-                      `}
-                      style={{
-                        borderColor: !isHidden ? metricInfo.color : undefined
-                      }}
-                    >
-                      {!isHidden 
-                        ? <Eye className="w-3 h-3" /> 
-                        : <EyeOff className="w-3 h-3" />
-                      }
-                      <span className="font-chinese">{metricInfo.name}</span>
-                      {metricInfo.unit && (
-                        <span className="text-cyber-muted text-xs">({metricInfo.unit})</span>
+                        <span className="font-chinese">{metricInfo.name}</span>
+                        {metricInfo.unit && (
+                          <span className="text-cyber-muted text-xs">({metricInfo.unit})</span>
+                        )}
+                        <div 
+                          className="w-2 h-2 rounded-full"
+                          style={{ backgroundColor: metricInfo.color }}
+                        />
+                        {missingCount > 0 && (
+                          <span className="text-xs text-white/50 ml-1">
+                            ({missingCount}缺失)
+                          </span>
+                        )}
+                      </button>
+                      {repoKey && (
+                        <button
+                          onClick={() => setPredictionMetric({groupKey, metricKey, metricName: metricInfo.name})}
+                          className="px-2 py-1.5 bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/50 rounded-lg text-yellow-400 transition-colors"
+                          title="预测未来趋势"
+                        >
+                          <TrendingUp className="w-3 h-3" />
+                        </button>
                       )}
-                      <div 
-                        className="w-2 h-2 rounded-full"
-                        style={{ backgroundColor: metricInfo.color }}
-                      />
-                      {missingCount > 0 && (
-                        <span className="text-xs text-white/50 ml-1">
-                          ({missingCount}缺失)
-                        </span>
-                      )}
-                    </button>
+                    </div>
                   )
                 })}
               </div>
@@ -255,11 +268,6 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick }: GroupedTi
                         content={({ active, payload, label }) => {
                           if (!active || !payload) return null
                           
-                          // 检查是否有缺失值
-                          const hasMissing = payload.some((entry: { dataKey?: string }) => 
-                            String(entry.dataKey || '').endsWith('_interpolated')
-                          )
-                          
                           return (
                             <div className="bg-cyber-card/95 backdrop-blur-md border border-cyber-border rounded-lg p-3 shadow-2xl">
                               <div className="flex items-center gap-2 mb-2 pb-2 border-b border-cyber-border">
@@ -268,8 +276,8 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick }: GroupedTi
                               </div>
                               <div className="space-y-1">
                                 {payload
-                                  .filter((entry: { dataKey?: string }) => !String(entry.dataKey || '').endsWith('_interpolated'))
-                                  .map((entry: { name?: string; value?: number | null; color?: string; dataKey?: string }, index: number) => {
+                                  .filter((entry: any) => !String(entry.dataKey || '').endsWith('_interpolated'))
+                                  .map((entry: any, index: number) => {
                                     const isMissing = entry.value === null
                                     return (
                                       <div key={index} className="flex items-center justify-between gap-4">
@@ -335,7 +343,6 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick }: GroupedTi
                               
                               if (isMissing) {
                                 // 缺失值：显示白色空心圆点
-                                const interpolatedY = payload?.[`${metricKey}_interpolated`]
                                 return (
                                   <g key={`missing-${metricKey}-${props.index}`}>
                                     <circle
@@ -421,9 +428,53 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick }: GroupedTi
     )
   }
 
+  // 获取预测所需的历史数据
+  const getHistoricalDataForPrediction = (groupKey: string, metricKey: string): Record<string, number> => {
+    if (!data?.groups?.[groupKey]?.metrics?.[metricKey]) return {}
+    
+    const metricData = data.groups[groupKey].metrics[metricKey]
+    const historicalData: Record<string, number> = {}
+    
+    data.timeAxis.forEach((month, index) => {
+      if (metricData.data[index] !== null && metricData.data[index] !== undefined) {
+        historicalData[month] = metricData.data[index] as number
+      }
+    })
+    
+    return historicalData
+  }
+
   // 正常显示所有分组
   return (
     <div className="space-y-6">
+      {/* 预测图表弹窗 */}
+      <AnimatePresence>
+        {predictionMetric && repoKey && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+            onClick={() => setPredictionMetric(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+            >
+              <PredictionChart
+                repoKey={repoKey}
+                metricName={predictionMetric.metricName}
+                historicalData={getHistoricalDataForPrediction(predictionMetric.groupKey, predictionMetric.metricKey)}
+                onClose={() => setPredictionMetric(null)}
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* 分组总览 */}
       <motion.div
         className="bg-cyber-card/50 backdrop-blur-sm rounded-xl border border-cyber-border p-4"

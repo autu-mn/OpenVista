@@ -18,16 +18,42 @@ class OpenDiggerMetrics:
     
     def get_metrics(self, owner, repo):
         metrics_config = {
+            # OpenRank
+            'openrank': 'OpenRank',
+            
+            # 统计指标
             'activity': '活跃度',
-            'openrank': '影响力',
             'stars': 'Star数',
-            'participants': '参与者数',
             'technical_fork': 'Fork数',
+            'attention': '关注度',
+            'participants': '参与者数',
+            
+            # 开发者相关
+            'new_contributors': '新增贡献者',
+            'contributors': '贡献者',
+            'inactive_contributors': '不活跃贡献者',
+            'bus_factor': '总线因子',
+            
+            # Issue 相关
             'issues_new': '新增Issue',
             'issues_closed': '关闭Issue',
+            'issue_comments': 'Issue评论',
+            'issue_response_time': 'Issue响应时间',
+            'issue_resolution_duration': 'Issue解决时长',
+            'issue_age': 'Issue存活时间',
+            
+            # PR (变更请求) 相关
+            'change_requests': '变更请求',
             'change_requests_accepted': 'PR接受数',
-            'change_requests_declined': 'PR拒绝数',
-            'code_change_commits': '代码提交数',
+            'change_requests_reviews': 'PR审查',
+            'change_request_response_time': 'PR响应时间',
+            'change_request_resolution_duration': 'PR处理时长',
+            'change_request_age': 'PR存活时间',
+            
+            # 代码更改相关（注意：OpenDigger没有code_change_commits，只有code_change_lines）
+            'code_change_lines_add': '代码新增行数',
+            'code_change_lines_remove': '代码删除行数',
+            'code_change_lines_sum': '代码变更总行数',
         }
         
         result = {}

@@ -1,0 +1,21 @@
+# 双塔模型依赖
+
+# PyTorch (根据你的系统选择)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Transformers
+transformers>=4.30.0
+
+# 数据处理
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+
+# 可视化
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# 工具
+tqdm>=4.65.0
+

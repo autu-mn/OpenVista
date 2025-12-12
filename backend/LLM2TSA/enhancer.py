@@ -128,16 +128,49 @@ class TimeSeriesEnhancer:
             if cached:
                 return cached
         
-        # 准备指标描述（优先显示重要指标）
+        # 准备指标描述（优先显示重要指标）- 完整版
         important_metrics = [
+            # 基础活跃度指标
             'OpenRank', 'opendigger_OpenRank', '影响力',
-            '活跃度', 'opendigger_活跃度',
-            'Star数', 'opendigger_Star数',
-            'Fork数', 'opendigger_Fork数',
-            '参与者数', 'opendigger_参与者数',
-            '代码提交数', 'opendigger_代码提交数',
-            '新增Issue', 'opendigger_新增Issue',
-            'PR接受数', 'opendigger_PR接受数'
+            '活跃度', 'opendigger_活跃度', 'Activity',
+            'Star数', 'opendigger_Star数', 'stars',
+            'Fork数', 'opendigger_Fork数', 'forks',
+            'Watch数', 'opendigger_Watch数', 'watchers',
+            
+            # Issue相关
+            '新增Issue', 'opendigger_新增Issue', 'issues_opened',
+            '已关闭Issue', 'opendigger_已关闭Issue', 'issues_closed',
+            'Issue评论数', 'opendigger_Issue评论数', 'issue_comments',
+            'Issue响应时间', 'opendigger_Issue响应时间', 'issue_response_time',
+            'Issue解决时间', 'opendigger_Issue解决时间', 'issue_resolution_time',
+            'avg_issue_response_days', 'avg_issue_resolution_days', 'avg_issue_lifetime_days',
+            
+            # PR相关
+            'PR接受数', 'opendigger_PR接受数', 'pull_requests_accepted',
+            'PR拒绝数', 'opendigger_PR拒绝数', 'pull_requests_declined',
+            '新增PR', 'opendigger_新增PR', 'pull_requests_opened',
+            'PR处理时间', 'opendigger_PR处理时间', 'pr_processing_time',
+            'PR响应时间', 'opendigger_PR响应时间', 'pr_response_time',
+            'avg_pr_response_days', 'avg_pr_processing_days', 'avg_pr_lifetime_days',
+            
+            # 代码提交
+            '代码提交数', 'opendigger_代码提交数', 'commits',
+            '代码变更行数', 'opendigger_代码变更行数', 'code_changes',
+            '代码增加行数', 'opendigger_代码增加行数', 'lines_added',
+            '代码删除行数', 'opendigger_代码删除行数', 'lines_deleted',
+            
+            # 贡献者
+            '参与者数', 'opendigger_参与者数', 'participants',
+            '新增贡献者数', 'opendigger_新增贡献者数', 'new_contributors',
+            '活跃贡献者数', 'opendigger_活跃贡献者数', 'active_contributors',
+            '核心贡献者数', 'opendigger_核心贡献者数', 'core_contributors',
+            'total_contributors',
+            
+            # GitHub API补充指标
+            'issues_count', 'prs_count', 'commits_count',
+            'contributors_count', 'releases_count',
+            'avg_issue_hot_score', 'avg_pr_hot_score',
+            'activity_score', 'community_engagement'
         ]
         
         metrics_desc = []
@@ -225,36 +258,49 @@ class TimeSeriesEnhancer:
         if len(time_axis) < 3:
             return []
         
-        # 提取主要指标的趋势（优先OpenRank，如果没有则用活跃度）
+        # 提取主要指标的趋势（按优先级尝试多个指标）
         main_metric_values = []
         metric_name = None
         
-        # 尝试找到OpenRank
-        for month in time_axis:
-            metrics = timeseries_data[month]
-            value = metrics.get('OpenRank') or metrics.get('opendigger_OpenRank') or metrics.get('影响力')
-            if value is not None:
-                metric_name = 'OpenRank'
-                break
+        # 按优先级尝试指标
+        metric_candidates = [
+            ('OpenRank', ['OpenRank', 'opendigger_OpenRank', '影响力']),
+            ('活跃度', ['活跃度', 'opendigger_活跃度', 'Activity', 'activity_score']),
+            ('Star数', ['Star数', 'opendigger_Star数', 'stars']),
+            ('参与者数', ['参与者数', 'opendigger_参与者数', 'participants', 'contributors_count']),
+            ('代码提交数', ['代码提交数', 'opendigger_代码提交数', 'commits', 'commits_count'])
+        ]
         
-        # 如果没有OpenRank，尝试活跃度
-        if not metric_name:
+        for candidate_name, candidate_keys in metric_candidates:
             for month in time_axis:
                 metrics = timeseries_data[month]
-                value = metrics.get('活跃度') or metrics.get('opendigger_活跃度')
-                if value is not None:
-                    metric_name = '活跃度'
+                for key in candidate_keys:
+                    value = metrics.get(key)
+                    if value is not None:
+                        metric_name = candidate_name
+                        break
+                if metric_name:
                     break
+            if metric_name:
+                break
         
         # 提取该指标的值
         for month in time_axis:
             metrics = timeseries_data[month]
+            value = None
+            
+            # 根据选定的指标提取值
             if metric_name == 'OpenRank':
                 value = metrics.get('OpenRank') or metrics.get('opendigger_OpenRank') or metrics.get('影响力')
             elif metric_name == '活跃度':
-                value = metrics.get('活跃度') or metrics.get('opendigger_活跃度')
-            else:
-                value = None
+                value = metrics.get('活跃度') or metrics.get('opendigger_活跃度') or metrics.get('Activity') or metrics.get('activity_score')
+            elif metric_name == 'Star数':
+                value = metrics.get('Star数') or metrics.get('opendigger_Star数') or metrics.get('stars')
+            elif metric_name == '参与者数':
+                value = metrics.get('参与者数') or metrics.get('opendigger_参与者数') or metrics.get('participants') or metrics.get('contributors_count')
+            elif metric_name == '代码提交数':
+                value = metrics.get('代码提交数') or metrics.get('opendigger_代码提交数') or metrics.get('commits') or metrics.get('commits_count')
+            
             main_metric_values.append((month, value))
         
         # 简单趋势检测：分段分析
@@ -322,23 +368,40 @@ class TimeSeriesEnhancer:
             metrics = timeseries_data.get(month, {})
             text_data = text_timeseries.get(month, {})
             
+            # 提取所有可用的关键指标
             openrank = metrics.get('OpenRank') or metrics.get('opendigger_OpenRank')
-            activity = metrics.get('活跃度') or metrics.get('opendigger_活跃度')
+            activity = metrics.get('活跃度') or metrics.get('opendigger_活跃度') or metrics.get('activity_score')
+            star = metrics.get('Star数') or metrics.get('opendigger_Star数') or metrics.get('stars')
+            fork = metrics.get('Fork数') or metrics.get('opendigger_Fork数') or metrics.get('forks')
+            issues = metrics.get('新增Issue') or metrics.get('issues_count')
+            prs = metrics.get('PR接受数') or metrics.get('prs_count')
+            commits = metrics.get('代码提交数') or metrics.get('commits_count')
+            contributors = metrics.get('参与者数') or metrics.get('contributors_count')
             
             issue_title = text_data.get('hottest_issue', {}).get('title', '') if text_data.get('hottest_issue') else ''
             
-            # 收集更多指标
-            star = metrics.get('Star数') or metrics.get('opendigger_Star数')
-            fork = metrics.get('Fork数') or metrics.get('opendigger_Fork数')
-            
-            line = f"{month}: OpenRank={openrank}, 活跃度={activity}"
+            # 构建数据摘要行
+            line_parts = [f"{month}:"]
+            if openrank:
+                line_parts.append(f"OpenRank={openrank}")
+            if activity:
+                line_parts.append(f"活跃度={activity}")
             if star:
-                line += f", Star数={star}"
+                line_parts.append(f"Star={star}")
             if fork:
-                line += f", Fork数={fork}"
+                line_parts.append(f"Fork={fork}")
+            if issues:
+                line_parts.append(f"Issue={issues}")
+            if prs:
+                line_parts.append(f"PR={prs}")
+            if commits:
+                line_parts.append(f"提交={commits}")
+            if contributors:
+                line_parts.append(f"贡献者={contributors}")
             if issue_title:
-                line += f", Issue={issue_title[:30]}"
-            data_summary.append(line)
+                line_parts.append(f"热门Issue={issue_title[:30]}")
+            
+            data_summary.append(" ".join(line_parts))
         
         prompt = f"""基于以下开源项目最近6个月的数据，识别趋势模式：
 
@@ -398,12 +461,19 @@ class TimeSeriesEnhancer:
         # 提取该指标的值
         for month in time_axis:
             metrics = timeseries_data[month]
+            value = None
+            
             if metric_name == 'OpenRank':
                 value = metrics.get('OpenRank') or metrics.get('opendigger_OpenRank') or metrics.get('影响力')
             elif metric_name == '活跃度':
-                value = metrics.get('活跃度') or metrics.get('opendigger_活跃度')
-            else:
-                value = None
+                value = metrics.get('活跃度') or metrics.get('opendigger_活跃度') or metrics.get('Activity') or metrics.get('activity_score')
+            elif metric_name == 'Star数':
+                value = metrics.get('Star数') or metrics.get('opendigger_Star数') or metrics.get('stars')
+            elif metric_name == '参与者数':
+                value = metrics.get('参与者数') or metrics.get('opendigger_参与者数') or metrics.get('participants') or metrics.get('contributors_count')
+            elif metric_name == '代码提交数':
+                value = metrics.get('代码提交数') or metrics.get('opendigger_代码提交数') or metrics.get('commits') or metrics.get('commits_count')
+            
             if value is not None:
                 values.append((month, value))
         
@@ -503,35 +573,48 @@ class TimeSeriesEnhancer:
         """
         time_axis = sorted(timeseries_data.keys())
         
-        # 提取主要指标值（优先OpenRank，其次活跃度）
+        # 提取主要指标值（按优先级尝试多个指标）
         values = []
         metric_name = None
         
-        # 确定使用哪个指标
-        for month in time_axis:
-            metrics = timeseries_data[month]
-            value = metrics.get('OpenRank') or metrics.get('opendigger_OpenRank') or metrics.get('影响力')
-            if value is not None:
-                metric_name = 'OpenRank'
-                break
+        # 按优先级尝试指标
+        metric_candidates = [
+            ('OpenRank', ['OpenRank', 'opendigger_OpenRank', '影响力']),
+            ('活跃度', ['活跃度', 'opendigger_活跃度', 'Activity', 'activity_score']),
+            ('Star数', ['Star数', 'opendigger_Star数', 'stars']),
+            ('参与者数', ['参与者数', 'opendigger_参与者数', 'participants', 'contributors_count']),
+            ('代码提交数', ['代码提交数', 'opendigger_代码提交数', 'commits', 'commits_count'])
+        ]
         
-        if not metric_name:
+        for candidate_name, candidate_keys in metric_candidates:
             for month in time_axis:
                 metrics = timeseries_data[month]
-                value = metrics.get('活跃度') or metrics.get('opendigger_活跃度')
-                if value is not None:
-                    metric_name = '活跃度'
+                for key in candidate_keys:
+                    value = metrics.get(key)
+                    if value is not None:
+                        metric_name = candidate_name
+                        break
+                if metric_name:
                     break
+            if metric_name:
+                break
         
         # 提取该指标的值
         for month in time_axis:
             metrics = timeseries_data[month]
+            value = None
+            
             if metric_name == 'OpenRank':
                 value = metrics.get('OpenRank') or metrics.get('opendigger_OpenRank') or metrics.get('影响力')
             elif metric_name == '活跃度':
-                value = metrics.get('活跃度') or metrics.get('opendigger_活跃度')
-            else:
-                value = None
+                value = metrics.get('活跃度') or metrics.get('opendigger_活跃度') or metrics.get('Activity') or metrics.get('activity_score')
+            elif metric_name == 'Star数':
+                value = metrics.get('Star数') or metrics.get('opendigger_Star数') or metrics.get('stars')
+            elif metric_name == '参与者数':
+                value = metrics.get('参与者数') or metrics.get('opendigger_参与者数') or metrics.get('participants') or metrics.get('contributors_count')
+            elif metric_name == '代码提交数':
+                value = metrics.get('代码提交数') or metrics.get('opendigger_代码提交数') or metrics.get('commits') or metrics.get('commits_count')
+            
             if value is not None:
                 values.append(value)
         

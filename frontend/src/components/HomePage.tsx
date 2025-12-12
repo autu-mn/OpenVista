@@ -51,13 +51,27 @@ export default function HomePage({ onProjectReady }: HomePageProps) {
           
           if (data.type === 'start') {
             setProgress({ step: 0, stepName: '开始', message: data.message, progress: 0 })
+          } else if (data.type === 'metrics_ready') {
+            // 指标数据已就绪，立即切换到项目页面展示
+            setProgress({ step: data.step || 1, stepName: '指标数据就绪', message: data.message, progress: data.progress || 20 })
+            // 不关闭SSE连接，继续监听后续进度
+            // 立即切换到项目页面，让前端可以展示指标数据
+            setTimeout(() => {
+              onProjectReady(data.projectName)
+              // 注意：不设置 setLoading(false)，让进度条继续显示后台爬取进度
+            }, 500)
           } else if (data.type === 'progress') {
             setProgress({ step: data.step, stepName: data.stepName, message: data.message, progress: data.progress })
           } else if (data.type === 'complete') {
             setProgress({ step: 9, stepName: '完成', message: data.message, progress: 100 })
             setLoading(false)
             eventSource.close()
-            setTimeout(() => onProjectReady(data.projectName), 1500)
+            // 如果之前已经切换到项目页面，这里可以刷新数据
+            // 如果还没切换，则切换
+            if (!data.projectName) {
+              const projectName = `${owner.trim()}_${repo.trim()}`
+              setTimeout(() => onProjectReady(projectName), 500)
+            }
           } else if (data.type === 'error') {
             setError(data.message)
             setLoading(false)
