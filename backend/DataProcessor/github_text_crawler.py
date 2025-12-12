@@ -58,9 +58,10 @@ class GitHubTextCrawler:
         self.tokens = []
         self.current_token_index = 0
         
-        token = os.getenv('GITHUB_TOKEN')
-        token_1 = os.getenv('GITHUB_TOKEN_1')
-        token_2 = os.getenv('GITHUB_TOKEN_2')
+        # 支持不同大小写的token名称
+        token = os.getenv('GITHUB_TOKEN') or os.getenv('github_token')
+        token_1 = os.getenv('GITHUB_TOKEN_1') or os.getenv('GitHub_TOKEN_1') or os.getenv('github_token_1')
+        token_2 = os.getenv('GITHUB_TOKEN_2') or os.getenv('GitHub_TOKEN_2') or os.getenv('github_token_2')
         
         if token:
             self.tokens.append(token)
@@ -68,6 +69,10 @@ class GitHubTextCrawler:
             self.tokens.append(token_1)
         if token_2:
             self.tokens.append(token_2)
+        
+        # 轮换使用token
+        if len(self.tokens) > 1:
+            print(f"  [INFO] 已加载 {len(self.tokens)} 个 GitHub Token，将轮换使用")
         
         if not self.tokens:
             raise ValueError("未找到 GITHUB_TOKEN，请在 .env 文件中配置")
@@ -82,8 +87,8 @@ class GitHubTextCrawler:
     
     def switch_token(self):
         if len(self.tokens) > 1:
-        self.current_token_index = (self.current_token_index + 1) % len(self.tokens)
-        self.token = self.tokens[self.current_token_index]
+            self.current_token_index = (self.current_token_index + 1) % len(self.tokens)
+            self.token = self.tokens[self.current_token_index]
             self.headers['Authorization'] = f'token {self.token}'
     
     def check_rate_limit(self):
@@ -108,8 +113,8 @@ class GitHubTextCrawler:
                 elif response.status_code == 403:
                     if attempt < max_retries - 1:
                         self.switch_token()
-                            time.sleep(2)
-                            continue
+                        time.sleep(2)
+                        continue
                 return response
             except requests.exceptions.SSLError as e:
                 if attempt < max_retries - 1:
@@ -130,7 +135,7 @@ class GitHubTextCrawler:
         for attempt in range(max_retries):
             try:
                 response = requests.get(url, timeout=15, verify=True)
-        if response.status_code == 200:
+                if response.status_code == 200:
                     return response.text
             except requests.exceptions.SSLError as e:
                 if attempt < max_retries - 1:
@@ -324,6 +329,101 @@ class GitHubTextCrawler:
         if depth == 0:
             print(f"  获取到 {len(docs_files)} 个文档文件")
         return docs_files
+    
+    def get_license_file(self, owner, repo):
+        """获取LICENSE文件（支持多种格式）"""
+        license_patterns = [
+            'LICENSE', 'LICENSE.txt', 'LICENSE.md',
+            'LICENCE', 'LICENCE.txt', 'LICENCE.md',
+            'COPYING', 'COPYING.txt',
+            'AUTHORS', 'AUTHORS.txt', 'AUTHORS.md'
+        ]
+        
+        for pattern in license_patterns:
+            file_data = self.get_file_content(owner, repo, pattern)
+            if file_data:
+                print(f"    - 找到 LICENSE: {pattern}")
+                return file_data
+            time.sleep(0.2)
+        
+        return None
+    
+    def get_all_markdown_files(self, owner, repo, max_files=50, max_depth=3):
+        """递归获取所有Markdown文件（包括doc/docx/pdf）"""
+        print(f"  获取所有文档文件（Markdown/DOC/DOCX/PDF，最多 {max_files} 个）...")
+        
+        all_files = []
+        visited_paths = set()
+        
+        def search_directory(path='', depth=0):
+            if depth >= max_depth or len(all_files) >= max_files:
+                return
+            
+            if path in visited_paths:
+                return
+            visited_paths.add(path)
+            
+            url = f"{self.base_url}/repos/{owner}/{repo}/contents/{path}" if path else f"{self.base_url}/repos/{owner}/{repo}/contents"
+            response = self.safe_request(url)
+            
+            if not response or response.status_code != 200:
+                return
+            
+            try:
+                items = response.json()
+                if not isinstance(items, list):
+                    return
+            except:
+                return
+            
+            # 跳过常见的不需要爬取的目录
+            skip_dirs = ['__pycache__', 'node_modules', '.git', 'build', 'dist', 
+                        '_build', '_static', '_templates', 'test', 'tests', 'examples',
+                        'vendor', 'target', 'bin', 'obj', '.idea', '.vscode']
+            
+            for item in items:
+                if len(all_files) >= max_files:
+                    break
+                
+                if item['type'] == 'file':
+                    file_name = item['name'].lower()
+                    file_ext = os.path.splitext(file_name)[1].lower()
+                    
+                    # 支持的文件类型（优先文本文件）
+                    if file_ext in ['.md', '.markdown', '.txt', '.rst', '.adoc'] or 'license' in file_name or 'readme' in file_name:
+                        file_data = self.get_file_content(owner, repo, item['path'])
+                        if file_data:
+                            all_files.append(file_data)
+                            print(f"    - {item['path']}")
+                            time.sleep(0.2)
+                    # 对于二进制文件（doc/docx/pdf），尝试获取但可能无法读取内容
+                    elif file_ext in ['.doc', '.docx', '.pdf']:
+                        # 尝试获取文件信息（GitHub API可能不返回大文件的内容）
+                        file_data = self.get_file_content(owner, repo, item['path'])
+                        if file_data:
+                            all_files.append(file_data)
+                            print(f"    - {item['path']} (二进制文件)")
+                            time.sleep(0.2)
+                        else:
+                            # 如果无法获取内容，至少记录文件信息
+                            all_files.append({
+                                'name': item['name'],
+                                'path': item['path'],
+                                'content': f"[二进制文件，无法读取内容] {item.get('size', 0)} bytes",
+                                'size': item.get('size', 0)
+                            })
+                            print(f"    - {item['path']} (二进制文件，仅记录信息)")
+                            time.sleep(0.1)
+                
+                elif item['type'] == 'dir' and depth < max_depth - 1:
+                    if item['name'] not in skip_dirs:
+                        search_directory(item['path'], depth + 1)
+            
+            time.sleep(0.3)
+        
+        search_directory()
+        print(f"  获取到 {len(all_files)} 个文档文件")
+        return all_files
     
     def get_important_md_files(self, owner, repo, max_files=10):
         """获取仓库根目录下的重要 Markdown 文件"""
@@ -578,25 +678,13 @@ class GitHubTextCrawler:
         return filename
     
     def process_data(self, json_file_path, enable_maxkb_upload=None):
-        try:
-            from data_processor import DataProcessor
-            
-            if enable_maxkb_upload is None:
-                maxkb_knowledge_id = os.getenv('MAXKB_KNOWLEDGE_ID')
-                enable_maxkb_upload = bool(maxkb_knowledge_id)
-                if enable_maxkb_upload:
-                    print("\n检测到MaxKB配置，将自动上传到知识库...")
-            
-            processor = DataProcessor(
-                json_file_path=json_file_path,
-                enable_maxkb_upload=enable_maxkb_upload
-            )
-            processor.process_all()
-        except ImportError:
-            print("警告: 未找到 data_processor 模块，跳过数据处理")
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
+        """
+        已废弃：旧的数据处理方法
+        请使用新的流程：crawl_monthly_data.py
+        """
+        print("⚠ 警告: process_data 方法已废弃")
+        print("   请使用新的流程: python crawl_monthly_data.py <owner> <repo>")
+        print("   新流程会自动处理数据并上传到MaxKB")
 
 
 def main():
