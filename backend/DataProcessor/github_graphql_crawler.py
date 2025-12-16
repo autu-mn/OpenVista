@@ -235,7 +235,7 @@ class GitHubGraphQLCrawler:
     
     def batch_fetch_issues(self, owner: str, repo: str, month: str, max_count: int = 3) -> List[Dict]:
         """
-        批量获取指定月份的Issues（包括评论）
+        批量获取指定月份的Issues（Top-3 热度，按评论数+反应数排序）
         month格式: 'YYYY-MM'
         """
         year, month_num = map(int, month.split('-'))
@@ -245,13 +245,16 @@ class GitHubGraphQLCrawler:
         else:
             end_date = datetime(year, month_num + 1, 1, tzinfo=timezone.utc).isoformat()
         
+        # 添加请求延迟，控制速率
+        time.sleep(0.2)
+        
         query = """
         query($owner: String!, $repo: String!, $after: String) {
           repository(owner: $owner, name: $repo) {
             issues(
-              first: 20
+              first: 50
               after: $after
-              orderBy: {field: UPDATED_AT, direction: DESC}
+              orderBy: {field: COMMENTS, direction: DESC}
               states: [OPEN, CLOSED]
             ) {
               pageInfo {
@@ -328,9 +331,10 @@ class GitHubGraphQLCrawler:
             issues = repository_data['issues']['nodes']
             page_info = repository_data['issues']['pageInfo']
             
+            # 收集该月份的所有issues，计算热度分数
+            month_issues = []
             for issue in issues:
                 # 跳过PR（PR在GitHub中也是issue类型）
-                # 使用__typename判断，或者检查是否有pull_request相关的字段
                 if issue.get('__typename') == 'PullRequest':
                     continue
                 
@@ -339,6 +343,11 @@ class GitHubGraphQLCrawler:
                 issue_end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
                 
                 if issue_start <= updated_at < issue_end:
+                    # 计算热度分数：评论数 + 反应数
+                    comments_count = len(issue['comments']['nodes'])
+                    reactions_count = issue['reactions']['totalCount']
+                    heat_score = comments_count + reactions_count
+                    
                     # 格式化数据
                     formatted_issue = {
                         'number': issue['number'],
@@ -348,11 +357,11 @@ class GitHubGraphQLCrawler:
                         'created_at': issue['createdAt'],
                         'updated_at': issue['updatedAt'],
                         'closed_at': issue.get('closedAt'),
-                        'comments_count': len(issue['comments']['nodes']),
+                        'comments_count': comments_count,
                         'reactions': {
-                            'total_count': issue['reactions']['totalCount'],
-                            'thumbs_up': 0,  # GraphQL API不直接提供thumbs_up计数
+                            'total_count': reactions_count,
                         },
+                        'heat_score': heat_score,  # 热度分数
                         'labels': [label['name'] for label in issue['labels']['nodes']],
                         'user': issue['author']['login'] if issue['author'] else '',
                         'assignees': [assignee['login'] for assignee in issue['assignees']['nodes']],
@@ -368,19 +377,21 @@ class GitHubGraphQLCrawler:
                             for comment in issue['comments']['nodes']
                         ]
                     }
-                    all_issues.append(formatted_issue)
-                    
-                    if len(all_issues) >= max_count:
-                        break
+                    month_issues.append(formatted_issue)
                 elif updated_at < issue_start:
-                    # 已经过了这个月份，停止
-                    return all_issues
+                    # 已经过了这个月份，停止收集
+                    break
             
-            if not page_info['hasNextPage'] or len(all_issues) >= max_count:
+            # 按热度分数排序，取Top-N
+            month_issues.sort(key=lambda x: x['heat_score'], reverse=True)
+            all_issues.extend(month_issues[:max_count])
+            
+            if len(all_issues) >= max_count or not page_info['hasNextPage']:
                 break
             
             cursor = page_info['endCursor']
         
+        # 返回Top-3（按热度排序）
         return all_issues[:max_count]
     
     def batch_fetch_prs(self, owner: str, repo: str, month: str, max_count: int = 3) -> List[Dict]:
@@ -538,7 +549,7 @@ class GitHubGraphQLCrawler:
     
     def batch_fetch_commits(self, owner: str, repo: str, month: str, max_count: int = 3) -> List[Dict]:
         """
-        批量获取指定月份的Commits
+        批量获取指定月份的Commits（只保留文本信息，减少字段）
         """
         year, month_num = map(int, month.split('-'))
         start_date = datetime(year, month_num, 1, tzinfo=timezone.utc).isoformat()
@@ -546,6 +557,9 @@ class GitHubGraphQLCrawler:
             end_date = datetime(year + 1, 1, 1, tzinfo=timezone.utc).isoformat()
         else:
             end_date = datetime(year, month_num + 1, 1, tzinfo=timezone.utc).isoformat()
+        
+        # 添加请求延迟，控制速率
+        time.sleep(0.2)
         
         query = """
         query($owner: String!, $repo: String!, $after: String) {
@@ -563,14 +577,9 @@ class GitHubGraphQLCrawler:
                       message
                       author {
                         name
-                        email
                         date
                       }
                       committedDate
-                      additions
-                      deletions
-                      changedFiles
-                      url
                     }
                   }
                 }
@@ -604,19 +613,14 @@ class GitHubGraphQLCrawler:
                 commit_end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
                 
                 if commit_start <= committed_date < commit_end:
+                    # 只保留文本信息，减少字段
                     formatted_commit = {
                         'sha': commit['oid'],
-                        'message': commit['message'],
+                        'message': commit['message'],  # 提交信息文本
                         'author': {
-                            'name': commit['author']['name'] if commit['author'] else '',
-                            'email': commit['author']['email'] if commit['author'] else '',
-                            'date': commit['author']['date'] if commit['author'] else commit['committedDate']
+                            'name': commit['author']['name'] if commit['author'] else '',  # 作者名字文本
                         },
-                        'committed_at': commit['committedDate'],
-                        'additions': commit.get('additions', 0),
-                        'deletions': commit.get('deletions', 0),
-                        'changed_files': commit.get('changedFiles', 0),
-                        'url': commit['url']
+                        'committed_at': commit['committedDate']
                     }
                     all_commits.append(formatted_commit)
                     
@@ -635,6 +639,7 @@ class GitHubGraphQLCrawler:
     def batch_fetch_releases(self, owner: str, repo: str, month: str, max_count: int = 3) -> List[Dict]:
         """
         批量获取指定月份的Releases
+        添加速率控制：每次请求延迟0.2秒
         """
         year, month_num = map(int, month.split('-'))
         start_date = datetime(year, month_num, 1, tzinfo=timezone.utc).isoformat()
@@ -642,6 +647,9 @@ class GitHubGraphQLCrawler:
             end_date = datetime(year + 1, 1, 1, tzinfo=timezone.utc).isoformat()
         else:
             end_date = datetime(year, month_num + 1, 1, tzinfo=timezone.utc).isoformat()
+        
+        # 添加请求延迟，控制速率
+        time.sleep(0.2)
         
         query = """
         query($owner: String!, $repo: String!, $after: String) {
@@ -718,28 +726,38 @@ class GitHubGraphQLCrawler:
     
     def crawl_month_batch(self, owner: str, repo: str, month: str, max_per_month: int = 3) -> Dict:
         """
-        批量爬取指定月份的所有数据（Issues、PRs、Commits、Releases）
-        使用并发请求提升速度（降低并发数到2以减少 rate limit）
+        批量爬取指定月份的数据（Issues Top-3热度、Commits文本、Releases）
+        已移除 PR 爬取以节省 API 配额
+        添加速率控制：每次请求延迟0.2秒
         """
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {
-                'issues': executor.submit(self.batch_fetch_issues, owner, repo, month, max_per_month),
-                'prs': executor.submit(self.batch_fetch_prs, owner, repo, month, max_per_month),
-                'commits': executor.submit(self.batch_fetch_commits, owner, repo, month, max_per_month),
-                'releases': executor.submit(self.batch_fetch_releases, owner, repo, month, max_per_month)
-            }
-            
-            results = {}
-            for key, future in futures.items():
-                try:
-                    results[key] = future.result(timeout=60)
-                except Exception as e:
-                    import traceback
-                    error_detail = traceback.format_exc()
-                    print(f"  ⚠ 获取{key}失败: {str(e)}")
-                    if 'GraphQL' in str(e) or 'query' in str(e).lower():
-                        print(f"    详细错误: {error_detail[-500:]}")  # 只打印最后500字符
-                    results[key] = []
+        # 串行执行，每次请求后延迟0.2秒
+        results = {
+            'issues': [],
+            'prs': [],  # 不再爬取，返回空列表
+            'commits': [],
+            'releases': []
+        }
+        
+        # 爬取 Issues（Top-3 热度）
+        try:
+            results['issues'] = self.batch_fetch_issues(owner, repo, month, max_per_month)
+        except Exception as e:
+            print(f"  ⚠ 爬取 {month} Issues 失败: {str(e)}")
+            results['issues'] = []
+        
+        # 爬取 Commits（只保留文本信息）
+        try:
+            results['commits'] = self.batch_fetch_commits(owner, repo, month, max_per_month)
+        except Exception as e:
+            print(f"  ⚠ 爬取 {month} Commits 失败: {str(e)}")
+            results['commits'] = []
+        
+        # 爬取 Releases
+        try:
+            results['releases'] = self.batch_fetch_releases(owner, repo, month, max_per_month)
+        except Exception as e:
+            print(f"  ⚠ 爬取 {month} Releases 失败: {str(e)}")
+            results['releases'] = []
         
         return results
 

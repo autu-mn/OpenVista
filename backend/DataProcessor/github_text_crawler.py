@@ -16,8 +16,48 @@ load_dotenv()
 class OpenDiggerMetrics:
     def __init__(self):
         self.base_url = "https://oss.open-digger.cn/github/"
+        self.max_retries = 3
+        self.timeout = 20
+    
+    def _fetch_single_metric(self, owner, repo, metric_key, metric_name):
+        """获取单个指标（带重试机制）"""
+        url = f"{self.base_url}{owner}/{repo}/{metric_key}.json"
+        
+        for attempt in range(self.max_retries):
+            try:
+                response = requests.get(url, timeout=self.timeout)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data:
+                        # 只保留月度数据（YYYY-MM 格式）
+                        monthly_data = {k: v for k, v in data.items() if '-' in k and len(k) == 7}
+                        if monthly_data:
+                            return {'success': True, 'name': metric_name, 'data': monthly_data}
+                    return {'success': False, 'name': metric_name, 'error': '数据为空'}
+                elif response.status_code == 404:
+                    return {'success': False, 'name': metric_name, 'error': '404 仓库无此指标'}
+                else:
+                    if attempt < self.max_retries - 1:
+                        time.sleep(0.2)  # 重试前等待
+                        continue
+                    return {'success': False, 'name': metric_name, 'error': f'HTTP {response.status_code}'}
+            except requests.exceptions.Timeout:
+                if attempt < self.max_retries - 1:
+                    time.sleep(0.2)
+                    continue
+                return {'success': False, 'name': metric_name, 'error': '超时'}
+            except requests.exceptions.ConnectionError:
+                if attempt < self.max_retries - 1:
+                    time.sleep(2)  # 连接错误等待更长
+                    continue
+                return {'success': False, 'name': metric_name, 'error': '连接错误'}
+            except Exception as e:
+                return {'success': False, 'name': metric_name, 'error': str(e)[:50]}
+        
+        return {'success': False, 'name': metric_name, 'error': '重试次数耗尽'}
     
     def get_metrics(self, owner, repo):
+        """获取 OpenDigger 指标数据（使用并发请求和重试机制）"""
         metrics_config = {
             # OpenRank
             'openrank': 'OpenRank',
@@ -45,31 +85,51 @@ class OpenDiggerMetrics:
             'change_requests_accepted': 'PR接受数',
             'change_requests_reviews': 'PR审查',
             
-            # 代码更改相关（注意：OpenDigger没有code_change_commits，只有code_change_lines）
+            # 代码更改相关
             'code_change_lines_add': '代码新增行数',
             'code_change_lines_remove': '代码删除行数',
             'code_change_lines_sum': '代码变更总行数',
         }
         
         result = {}
-        success_count = 0
         missing_metrics = []
+        error_details = []
         
-        for metric_key, metric_name in metrics_config.items():
-            url = f"{self.base_url}{owner}/{repo}/{metric_key}.json"
-            try:
-                response = requests.get(url, timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data:
-                        result[metric_name] = data
-                        success_count += 1
-                    else:
-                        missing_metrics.append(metric_name)
+        print(f"    正在获取 {len(metrics_config)} 个 OpenDigger 指标...")
+        
+        # 使用并发请求提高速度
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {
+                executor.submit(self._fetch_single_metric, owner, repo, key, name): name
+                for key, name in metrics_config.items()
+            }
+            
+            completed = 0
+            for future in as_completed(futures):
+                completed += 1
+                res = future.result()
+                if res['success']:
+                    result[res['name']] = res['data']
                 else:
-                    missing_metrics.append(metric_name)
-            except:
-                missing_metrics.append(metric_name)
+                    missing_metrics.append(res['name'])
+                    if res['error'] not in ['404 仓库无此指标', '数据为空']:
+                        error_details.append(f"{res['name']}: {res['error']}")
+        
+        # 打印进度信息
+        success_count = len(result)
+        if success_count > 0:
+            print(f"    ✓ 成功获取 {success_count}/{len(metrics_config)} 个指标")
+            # 显示数据范围
+            sample_metric = next(iter(result.values())) if result else {}
+            if sample_metric:
+                months = sorted(sample_metric.keys())
+                if months:
+                    print(f"    ✓ 数据范围: {months[0]} ~ {months[-1]} ({len(months)} 个月)")
+        else:
+            print(f"    ⚠ 未能获取任何 OpenDigger 指标!")
+        
+        if error_details:
+            print(f"    ⚠ 错误详情: {', '.join(error_details[:3])}{'...' if len(error_details) > 3 else ''}")
         
         return result, missing_metrics
 
@@ -149,7 +209,7 @@ class GitHubTextCrawler:
                 return None
             except Exception as e:
                 if attempt < max_retries - 1:
-                    time.sleep(1)
+                    time.sleep(0.2)
                     continue
                 print(f"请求失败: {str(e)}")
                 return None
@@ -170,7 +230,7 @@ class GitHubTextCrawler:
                 return None
             except Exception as e:
                 if attempt < max_retries - 1:
-                    time.sleep(1)
+                    time.sleep(0.2)
                     continue
                 print(f"获取内容失败: {str(e)}")
                 return None
@@ -202,8 +262,9 @@ class GitHubTextCrawler:
             return None
     
     def get_readme(self, owner, repo):
-        """获取 README 文件（包括英文版和中文版）"""
+        """获取 README 文件（包括英文版和中文版，尽可能获取所有语言版本）"""
         readmes = []
+        found_names = set()  # 避免重复
         
         # 尝试获取默认 README（通常是英文）
         url = f"{self.base_url}/repos/{owner}/{repo}/readme"
@@ -220,9 +281,10 @@ class GitHubTextCrawler:
                             'path': data['path'],
                             'size': data['size'],
                             'content': content,
-                            'language': 'default'
+                            'language': 'english'
                         })
-                        print(f"    - {data['name']} (默认)")
+                        found_names.add(data['name'].lower())
+                        print(f"    - {data['name']} (英文/默认)")
                     else:
                         print(f"    ⚠ README下载失败: {content_url}")
                 else:
@@ -234,45 +296,71 @@ class GitHubTextCrawler:
         except Exception as e:
             print(f"    ⚠ 获取README异常: {str(e)}")
         
-        # 尝试获取中文版 README（并发获取，找到第一个就停止）
-        chinese_readme_names = [
+        # 尝试获取所有语言版本的 README（不只是中文）
+        multilang_readme_names = [
+            # 中文版（根目录）
             'README-cn.md', 'README-CN.md', 'README_CN.md', 'README_cn.md',
             'README-zh.md', 'README-ZH.md', 'README_ZH.md', 'README_zh.md',
-            'README-zh-CN.md', 'README_zh_CN.md',
-            'README.zh.md', 'README.zh-CN.md',
-            'README中文.md', 'README.Chinese.md'
+            'README-zh-CN.md', 'README_zh_CN.md', 'README-zh-Hans.md',
+            'README.zh.md', 'README.zh-CN.md', 'README.zh-Hans.md',
+            'README中文.md', 'README.Chinese.md', 'README_Chinese.md',
+            # 中文版（docs 目录）
+            'docs/README-cn.md', 'docs/README-CN.md', 'docs/README_CN.md',
+            'docs/README-zh.md', 'docs/README-ZH.md', 'docs/README_zh.md',
+            'docs/README.zh.md', 'docs/README.zh-CN.md',
+            # 日文版
+            'README-ja.md', 'README_ja.md', 'README.ja.md',
+            # 韩文版
+            'README-ko.md', 'README_ko.md', 'README.ko.md',
+            # 其他语言
+            'README-es.md', 'README-fr.md', 'README-de.md', 'README-pt.md',
+            # i18n 目录
+            'i18n/README-zh.md', 'i18n/README-cn.md', 'i18n/README.zh-CN.md',
+            # 中文版（可能在根目录用不同名字）
+            'README_zh-CN.md', 'README-Hans.md', 'README_Hans.md',
         ]
         
-        # 并发获取，找到第一个就停止
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        # 并发获取所有语言版本的 README
+        with ThreadPoolExecutor(max_workers=8) as executor:
             futures = {
                 executor.submit(self.get_file_content, owner, repo, readme_name): readme_name 
-                for readme_name in chinese_readme_names
+                for readme_name in multilang_readme_names
             }
             
             for future in as_completed(futures):
                 readme_name = futures[future]
                 try:
-                    file_data = future.result(timeout=3)
-                    if file_data:
-                        file_data['language'] = 'chinese'
+                    file_data = future.result(timeout=5)
+                    if file_data and file_data.get('name', '').lower() not in found_names:
+                        # 判断语言
+                        name_lower = readme_name.lower()
+                        if 'zh' in name_lower or 'cn' in name_lower or 'chinese' in name_lower or 'hans' in name_lower or '中文' in name_lower:
+                            file_data['language'] = 'chinese'
+                            lang_label = '中文'
+                        elif 'ja' in name_lower:
+                            file_data['language'] = 'japanese'
+                            lang_label = '日文'
+                        elif 'ko' in name_lower:
+                            file_data['language'] = 'korean'
+                            lang_label = '韩文'
+                        else:
+                            file_data['language'] = 'other'
+                            lang_label = '其他'
+                        
                         readmes.append(file_data)
-                        print(f"    - {readme_name} (中文)")
-                        # 取消其他未完成的任务
-                        for f in futures:
-                            if f != future and not f.done():
-                                f.cancel()
-                        break  # 找到一个中文版就停止
+                        found_names.add(file_data.get('name', '').lower())
+                        print(f"    - {readme_name} ({lang_label})")
                 except Exception:
                     pass
         
-        # 返回所有找到的 README（如果有多个）或单个或 None
+        # 返回所有找到的 README
         if len(readmes) == 0:
             return None
         elif len(readmes) == 1:
             return readmes[0]
         else:
             # 返回列表，包含多个 README
+            print(f"    ✓ 共找到 {len(readmes)} 个 README 文件")
             return readmes
     
     def get_file_content(self, owner, repo, file_path):
@@ -333,7 +421,7 @@ class GitHubTextCrawler:
         
         return config_files
     
-    def _collect_doc_file_paths(self, owner, repo, path='docs', max_files=30, depth=0, max_depth=2, collected_paths=None):
+    def _collect_doc_file_paths(self, owner, repo, path='docs', max_files=35, depth=0, max_depth=3, collected_paths=None):
         """收集文档文件路径（不实际获取内容）"""
         if collected_paths is None:
             collected_paths = []
@@ -354,8 +442,8 @@ class GitHubTextCrawler:
         except:
             return collected_paths
         
-        # 只处理前 20 个项目（文件+目录），避免目录项过多
-        items = items[:20]
+        # 只处理前 50 个项目（文件+目录），增加数量以收集更多文档
+        items = items[:50]
         
         for item in items:
             if len(collected_paths) >= max_files:
@@ -378,28 +466,61 @@ class GitHubTextCrawler:
         
         return collected_paths
     
-    def get_docs_files(self, owner, repo, path='docs', max_files=30, depth=0, max_depth=2):
-        """获取 docs 目录下的文档文件（并发优化）"""
+    def get_docs_files(self, owner, repo, path='docs', max_files=35, depth=0, max_depth=3):
+        """获取文档文件（并发优化，搜索多个目录避免早停）"""
         if depth == 0:
-            print(f"  获取 docs 目录文档（最多 {max_files} 个文件，最大深度 {max_depth}，并发）...")
+            print(f"  获取文档文件（最多 {max_files} 个文件，最大深度 {max_depth}，并发）...")
         
-        # 先收集所有文件路径
-        file_paths = self._collect_doc_file_paths(owner, repo, path, max_files, depth, max_depth)
+        all_file_paths = []
         
-        if not file_paths:
-            if depth == 0:
-                print(f"  docs 目录不存在或无法访问")
+        # 尝试多个可能的文档目录（扩展搜索范围）
+        doc_dirs = [
+            'docs', 'documentation', 'doc', 'wiki', 'guides', 'guide',
+            '.github', 'content', 'articles', 'tutorials', 'examples',
+            'src/docs', 'lib/docs', 'resources', 'assets/docs'
+        ]
+        for doc_dir in doc_dirs:
+            if len(all_file_paths) >= max_files:
+                break
+            paths = self._collect_doc_file_paths(owner, repo, doc_dir, max_files - len(all_file_paths), 0, max_depth)
+            all_file_paths.extend(paths)
+            if paths:
+                print(f"    在 {doc_dir}/ 目录找到 {len(paths)} 个文档")
+        
+        # 搜索根目录下的所有markdown文件
+        if len(all_file_paths) < max_files:
+            print(f"    搜索根目录下的 Markdown 文件...")
+            root_paths = self._collect_root_md_files(owner, repo, max_files - len(all_file_paths))
+            all_file_paths.extend(root_paths)
+            if root_paths:
+                print(f"    在根目录找到 {len(root_paths)} 个 Markdown 文件")
+        
+        # 如果还不够，搜索更多子目录
+        if len(all_file_paths) < max_files:
+            extra_dirs = ['src', 'lib', 'packages', 'extensions', 'plugins', 'modules']
+            for extra_dir in extra_dirs:
+                if len(all_file_paths) >= max_files:
+                    break
+                paths = self._collect_doc_file_paths(owner, repo, extra_dir, max_files - len(all_file_paths), 0, 2)
+                # 只添加 .md 文件
+                md_paths = [p for p in paths if p.lower().endswith('.md')]
+                all_file_paths.extend(md_paths)
+                if md_paths:
+                    print(f"    在 {extra_dir}/ 目录找到 {len(md_paths)} 个 Markdown 文件")
+        
+        if not all_file_paths:
+            print(f"  ⚠ 未找到文档文件")
             return []
         
-        # 限制文件数量
-        file_paths = file_paths[:max_files]
+        # 去重并限制文件数量
+        all_file_paths = list(dict.fromkeys(all_file_paths))[:max_files]
         
         # 并发获取文件内容
         docs_files = []
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = {
                 executor.submit(self.get_file_content, owner, repo, file_path): file_path 
-                for file_path in file_paths
+                for file_path in all_file_paths
             }
             
             for future in as_completed(futures):
@@ -407,16 +528,47 @@ class GitHubTextCrawler:
                 try:
                     file_data = future.result(timeout=5)
                     if file_data:
-                        if depth == 0:
-                            print(f"    - {os.path.basename(file_path)}")
+                        print(f"    - {file_path}")
                         docs_files.append(file_data)
                 except Exception as e:
                     # 文件获取失败，静默跳过
                     pass
         
-        if depth == 0:
-            print(f"  获取到 {len(docs_files)} 个文档文件")
+        print(f"  获取到 {len(docs_files)} 个文档文件")
         return docs_files
+    
+    def _collect_root_md_files(self, owner, repo, max_files=30):
+        """收集根目录下的 Markdown 文件（扩展搜索）"""
+        url = f"{self.base_url}/repos/{owner}/{repo}/contents/"
+        response = self.safe_request(url)
+        
+        if not response or response.status_code != 200:
+            return []
+        
+        try:
+            items = response.json()
+            if not isinstance(items, list):
+                return []
+        except:
+            return []
+        
+        md_files = []
+        # 已经在重要文件列表中获取过的文件
+        skip_files = ['README.md', 'LICENSE.md', 'SECURITY.md', 'CONTRIBUTING.md', 
+                      'CHANGELOG.md', 'HISTORY.md', 'CODE_OF_CONDUCT.md', 'readme.md',
+                      'license.md', 'security.md', 'contributing.md']
+        
+        for item in items:
+            if len(md_files) >= max_files:
+                break
+            if item['type'] == 'file':
+                file_ext = os.path.splitext(item['name'])[1].lower()
+                if file_ext in ['.md', '.markdown', '.rst', '.txt']:
+                    # 跳过已经获取的重要文件
+                    if item['name'] not in skip_files and item['name'].lower() not in skip_files:
+                        md_files.append(item['path'])
+        
+        return md_files
     
     def get_license_file(self, owner, repo):
         """获取LICENSE文件（支持多种格式，并发优化）"""
@@ -527,14 +679,20 @@ class GitHubTextCrawler:
         print(f"  获取到 {len(all_files)} 个文档文件")
         return all_files
     
-    def get_important_md_files(self, owner, repo, max_files=10):
-        """获取仓库根目录下的重要 Markdown 文件（并发优化）"""
-        print(f"  获取根目录重要 Markdown 文件（并发）...")
+    def get_important_md_files(self, owner, repo, max_files=20):
+        """获取仓库根目录下的重要 Markdown 文件（并发优化，避免早停）"""
+        print(f"  获取根目录重要 Markdown 文件（最多 {max_files} 个，并发）...")
         important_names = [
             'CONTRIBUTING.md', 'CHANGELOG.md', 'HISTORY.md',
             'LICENSE.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md',
             'ROADMAP.md', 'ARCHITECTURE.md', 'DESIGN.md',
-            'FAQ.md', 'INSTALL.md', 'USAGE.md'
+            'FAQ.md', 'INSTALL.md', 'USAGE.md',
+            'TUTORIAL.md', 'GUIDE.md', 'QUICKSTART.md',
+            'GETTING_STARTED.md', 'DEVELOPMENT.md', 'MAINTAINERS.md',
+            'CONTRIBUTORS.md', 'AUTHORS.md', 'CREDITS.md',
+            'DEPLOYMENT.md', 'CONFIGURATION.md', 'TROUBLESHOOTING.md',
+            'MIGRATION.md', 'UPGRADE.md', 'RELEASE_NOTES.md',
+            'API.md', 'DOCUMENTATION.md', 'SPEC.md'
         ]
         
         # 限制并发数量，避免过多请求

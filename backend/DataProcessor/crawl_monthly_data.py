@@ -85,7 +85,7 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
                 'repo_info': executor.submit(text_crawler.get_repo_info, owner, repo),
                 'readme': executor.submit(text_crawler.get_readme, owner, repo),
                 'license': executor.submit(text_crawler.get_license_file, owner, repo),
-                'important_md_files': executor.submit(text_crawler.get_important_md_files, owner, repo, max_files=10),
+                'important_md_files': executor.submit(text_crawler.get_important_md_files, owner, repo, max_files=20),
                 'config_files': executor.submit(text_crawler.get_config_files, owner, repo)
             }
             
@@ -97,18 +97,20 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
                     print(f"  ⚠ 获取{key}失败: {str(e)}")
                     results[key] = None if key != 'important_md_files' else []
             
-            # 获取文档文件（限制为20个，但保留重要文档）
-            # 先获取重要文档，再补充其他文档
+            # 获取文档文件（限制为35个，但保留重要文档，避免早停）
+            # 先获取重要文档，再补充其他文档（搜索多个目录和根目录）
             important_docs = results.get('important_md_files', [])
-            remaining_count = max(0, 20 - len(important_docs))
+            remaining_count = max(0, 35 - len(important_docs))
             
             if remaining_count > 0:
-                docs_files = text_crawler.get_docs_files(owner, repo, max_files=remaining_count, max_depth=2)
+                docs_files = text_crawler.get_docs_files(owner, repo, max_files=remaining_count, max_depth=3)
                 results['docs_files'] = docs_files
                 results['all_doc_files'] = important_docs + docs_files[:remaining_count]
             else:
                 results['docs_files'] = []
-                results['all_doc_files'] = important_docs[:20]
+                results['all_doc_files'] = important_docs[:35]
+            
+            print(f"  ✓ 文档爬取完成: 重要文档 {len(important_docs)} 个 + 其他文档 {len(results.get('docs_files', []))} 个 = 总计 {len(results.get('all_doc_files', []))} 个")
             
             return results
     
@@ -138,7 +140,7 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
             print(f"  ⚠ LLM客户端初始化失败: {str(e)}")
             print("  ℹ 将跳过LLM摘要生成")
     
-    processor = MonthlyDataProcessor(llm_client=llm_client)
+    processor = MonthlyDataProcessor(llm_client=llm_client, skip_llm_summary=not enable_llm_summary)
     
     # 提取静态文本
     static_texts = processor.extract_static_texts(static_docs)
@@ -159,7 +161,8 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
     processor.upload_to_maxkb(maxkb_dir, owner, repo)
     
     # ========== 步骤3: 爬取issue等时序文本 ==========
-    print("\n[3/4] 爬取Issue/PR/Commit/Release时序文本...")
+    print("\n[3/4] 爬取Issue/Commit/Release时序文本（已移除PR爬取，Issues只爬Top-3热度）...")
+    print("  → 速率控制: 每次请求延迟0.2秒")
     monthly_data_result = monthly_crawler.crawl_all_months(
         owner, repo, 
         max_per_month=max_per_month,
@@ -246,8 +249,8 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
             'opendigger_metrics_raw': opendigger_data  # 保留原始数据（不含0填充）
         }, f, ensure_ascii=False, indent=2)
     
-    # 保存用于双塔模型的数据（时序对齐后的数据）
-    processor.save_for_model(processed_data, output_dir)
+    # 保存用于双塔模型的数据（时序对齐后的数据）+ 生成总体 AI 摘要
+    processor.save_for_model(processed_data, output_dir, repo_info=repo_info)
     
     # 保存元数据（包含仓库信息和标签）
     metadata = {
