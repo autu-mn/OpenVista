@@ -32,6 +32,8 @@ class DataService:
         self.loaded_data = {}
         self.loaded_timeseries = {}
         self.loaded_text = {}
+        self.loaded_issue_classification = {}
+        self.loaded_project_summary = {}
         
         # 指标分组配置 - 按类型和数量级分组
         self.metric_groups = {
@@ -102,34 +104,39 @@ class DataService:
             print(f"数据目录不存在: {DATA_DIR}")
             return
         
-        # 支持两种目录结构：
+        # 支持三种目录结构：
         # 1. 旧结构：Data/{project}_text_data_{timestamp}_processed/
-        # 2. 新结构：DataProcessor/data/{owner}_{repo}/{project}_text_data_{timestamp}_processed/
+        # 2. 中间结构：DataProcessor/data/{owner}_{repo}/{project}_text_data_{timestamp}_processed/
+        # 3. 新结构：DataProcessor/data/{owner}_{repo}/monthly_data_{timestamp}/
         
         for item in os.listdir(DATA_DIR):
             item_path = os.path.join(DATA_DIR, item)
             
             if os.path.isdir(item_path):
                 # 检查是否是项目文件夹（新结构）
-                processed_folders = [
+                # 支持 monthly_data_* 和 *_processed 两种格式
+                data_folders = [
                     f for f in os.listdir(item_path)
-                    if os.path.isdir(os.path.join(item_path, f)) and '_processed' in f
+                    if os.path.isdir(os.path.join(item_path, f)) and 
+                    ('monthly_data_' in f or '_processed' in f)
                 ]
                 
-                if processed_folders:
-                    # 新结构：项目文件夹下有processed文件夹
-                    for processed_folder in processed_folders:
-                        folder_path = os.path.join(item_path, processed_folder)
-                        timeseries_file = os.path.join(folder_path, 'timeseries_data.json')
+                if data_folders:
+                    # 按时间戳排序，取最新的
+                    data_folders.sort(reverse=True)
+                    latest_folder = data_folders[0]
+                    folder_path = os.path.join(item_path, latest_folder)
+                    timeseries_file = os.path.join(folder_path, 'timeseries_data.json')
+                    
+                    if os.path.exists(timeseries_file):
+                        # 使用项目文件夹名作为repo_key（格式：owner_repo -> owner/repo）
+                        repo_key = item.replace('_', '/')
+                        print(f"自动加载数据: {repo_key} from {latest_folder}")
+                        # 同时保存两种格式的映射
+                        self._load_processed_data(repo_key, folder_path)
+                        # 也保存原始格式（owner_repo）以便查找
+                        self._load_processed_data(item, folder_path)
                         
-                        if os.path.exists(timeseries_file):
-                            # 使用项目文件夹名作为repo_key（格式：owner_repo -> owner/repo）
-                            # 但保留原始格式用于查找
-                            repo_key = item.replace('_', '/')
-                            # 同时保存两种格式的映射
-                            self._load_processed_data(repo_key, folder_path)
-                            # 也保存原始格式（owner_repo）以便查找
-                            self._load_processed_data(item, folder_path)
                 elif item.endswith('_processed'):
                     # 旧结构：直接在Data目录下的processed文件夹
                     folder_path = item_path
@@ -154,6 +161,7 @@ class DataService:
         """加载处理后的数据文件夹"""
         timeseries_file = os.path.join(folder_path, 'timeseries_data.json')
         text_file = os.path.join(folder_path, 'text_data_structured.json')
+        issue_classification_file = os.path.join(folder_path, 'issue_classification.json')
         
         # 加载时序数据
         if os.path.exists(timeseries_file):
@@ -181,6 +189,23 @@ class DataService:
                     self.loaded_text[repo_key] = json.load(f)
             except Exception as e:
                 print(f"加载文本数据失败 {repo_key}: {e}")
+        
+        # 加载 Issue 分类数据
+        if os.path.exists(issue_classification_file):
+            try:
+                with open(issue_classification_file, 'r', encoding='utf-8') as f:
+                    self.loaded_issue_classification[repo_key] = json.load(f)
+            except Exception as e:
+                print(f"加载Issue分类数据失败 {repo_key}: {e}")
+        
+        # 加载项目 AI 摘要
+        project_summary_file = os.path.join(folder_path, 'project_summary.json')
+        if os.path.exists(project_summary_file):
+            try:
+                with open(project_summary_file, 'r', encoding='utf-8') as f:
+                    self.loaded_project_summary[repo_key] = json.load(f)
+            except Exception as e:
+                print(f"加载项目摘要失败 {repo_key}: {e}")
     
     def _generate_time_range(self, start, end):
         """生成时间范围列表 (YYYY-MM 格式)"""
@@ -829,21 +854,47 @@ class DataService:
         except Exception as e:
             result['groupedTimeseries'] = {'error': str(e)}
         
-        # 获取 Issue 分析数据
+        # 获取 Issue 分析数据（优先使用预计算的分类数据）
+        actual_key = self._normalize_repo_key(repo_key)
         try:
-            issues_data = self.get_aligned_issues(repo_key)
-            result['issueCategories'] = [
-                {
-                    'month': month,
-                    'total': data.get('total', 0),
-                    'categories': data.get('categories', {})
+            if actual_key in self.loaded_issue_classification:
+                # 使用预计算的 Issue 分类数据
+                classification_data = self.loaded_issue_classification[actual_key]
+                by_month = classification_data.get('by_month', {})
+                labels = classification_data.get('labels', {
+                    'feature': '功能需求', 'bug': 'Bug修复', 
+                    'question': '社区咨询', 'other': '其他'
+                })
+                
+                result['issueCategories'] = [
+                    {
+                        'month': month,
+                        'total': data.get('total', 0),
+                        'categories': {
+                            labels.get('feature', '功能需求'): data.get('feature', 0),
+                            labels.get('bug', 'Bug修复'): data.get('bug', 0),
+                            labels.get('question', '社区咨询'): data.get('question', 0),
+                            labels.get('other', '其他'): data.get('other', 0)
+                        }
+                    }
+                    for month, data in sorted(by_month.items())
+                ]
+                result['monthlyKeywords'] = {}  # 预计算数据中没有关键词
+            else:
+                # 回退到从文本数据计算
+                issues_data = self.get_aligned_issues(repo_key)
+                result['issueCategories'] = [
+                    {
+                        'month': month,
+                        'total': data.get('total', 0),
+                        'categories': data.get('categories', {})
+                    }
+                    for month, data in issues_data.get('monthlyData', {}).items()
+                ]
+                result['monthlyKeywords'] = {
+                    month: data.get('keywords', [])
+                    for month, data in issues_data.get('monthlyData', {}).items()
                 }
-                for month, data in issues_data.get('monthlyData', {}).items()
-            ]
-            result['monthlyKeywords'] = {
-                month: data.get('keywords', [])
-                for month, data in issues_data.get('monthlyData', {}).items()
-            }
         except Exception as e:
             result['issueCategories'] = []
             result['monthlyKeywords'] = {}
@@ -854,5 +905,16 @@ class DataService:
             result['waves'] = waves_data.get('waves', [])
         except Exception as e:
             result['waves'] = []
+        
+        # 获取项目 AI 摘要
+        if actual_key in self.loaded_project_summary:
+            summary_data = self.loaded_project_summary[actual_key]
+            result['projectSummary'] = {
+                'aiSummary': summary_data.get('ai_summary', ''),
+                'issueStats': summary_data.get('issue_stats', {}),
+                'dataRange': summary_data.get('data_range', {})
+            }
+        else:
+            result['projectSummary'] = None
         
         return result

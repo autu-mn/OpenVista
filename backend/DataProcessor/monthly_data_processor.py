@@ -35,13 +35,13 @@ class MonthlyDataProcessor:
             self.llm_client = None
         else:
             self.llm_client = llm_client
-            if not self.llm_client and LLM_AVAILABLE:
-                try:
-                    self.llm_client = DeepSeekClient()
-                except:
-                    print("  ⚠ 无法初始化LLM客户端")
+        if not self.llm_client and LLM_AVAILABLE:
+            try:
+                self.llm_client = DeepSeekClient()
+            except:
+                print("  ⚠ 无法初始化LLM客户端")
         
-        # 定义所有25个指标（用于确保所有指标都被保存，缺失的用0填充）
+        # 定义所有19个指标（用于确保所有指标都被保存，缺失的用0填充）
         self.all_metrics_list = [
             'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数',
             '新增贡献者', '贡献者', '不活跃贡献者', '总线因子',
@@ -52,14 +52,14 @@ class MonthlyDataProcessor:
     
     def _ensure_all_metrics(self, opendigger_metrics: Dict) -> Dict:
         """
-        确保所有25个指标都存在
+        确保所有19个指标都存在
         优先级：OpenDigger > GitHub API补充 > 0填充（用于模型训练）
         
         Args:
             opendigger_metrics: OpenDigger返回的指标数据（可能已包含GitHub API补充的数据）
             
         Returns:
-            完整的指标数据（所有25个指标都存在）
+            完整的指标数据（所有19个指标都存在）
         """
         complete_metrics = {}
         
@@ -247,7 +247,7 @@ class MonthlyDataProcessor:
             'opendigger_metrics': {
               'OpenRank': 10.5,
               '活跃度': 20.3,
-              ... (所有25个指标，缺失的用0填充)
+              ... (所有19个指标，缺失的用0填充)
             }
           },
           ...
@@ -255,7 +255,7 @@ class MonthlyDataProcessor:
         """
         processed = {}
         
-        # 定义所有25个指标（用于确保所有指标都被保存，缺失的用0填充）
+        # 定义所有19个指标（用于确保所有指标都被保存，缺失的用0填充）
         all_metrics_list = [
             'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数',
             '新增贡献者', '贡献者', '不活跃贡献者', '总线因子',
@@ -293,7 +293,7 @@ class MonthlyDataProcessor:
             # 组织数据（移除 llm_summary，改为总摘要）
             processed[month] = {
                 'timeseries_features': timeseries_features,
-                'opendigger_metrics': month_metrics,  # 保存所有25个指标，缺失的用0填充
+                'opendigger_metrics': month_metrics,  # 保存所有19个指标，缺失的用0填充
                 'issue_classification': issue_classification,  # Issue 分类统计
                 'text_data': {
                     'full_text': full_text,

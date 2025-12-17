@@ -108,7 +108,7 @@ class MonthlyCrawler:
                 return dt.strftime('%Y-%m')
         return None
     
-    def crawl_issues_by_month(self, owner: str, repo: str, month: str, max_per_month: int = 3) -> List[Dict]:
+    def crawl_issues_by_month(self, owner: str, repo: str, month: str, max_per_month: int = 50) -> List[Dict]:
         """
         按月份爬取Issues（Top-3热度，按评论数+反应数排序）
         month格式: 'YYYY-MM'
@@ -283,7 +283,7 @@ class MonthlyCrawler:
                     return prs
             
             page += 1
-            time.sleep(0.5)
+            time.sleep(0.05)
         
         return prs[:max_per_month]
     
@@ -314,7 +314,7 @@ class MonthlyCrawler:
                     }
                     for c in comments_data[:50]
                 ]
-            time.sleep(0.3)
+            time.sleep(0.05)
         
         # 获取review comments
         review_comments = []
@@ -333,7 +333,7 @@ class MonthlyCrawler:
                     }
                     for c in review_data[:50]
                 ]
-            time.sleep(0.3)
+            time.sleep(0.05)
         
         return {
             'number': pr['number'],
@@ -370,7 +370,7 @@ class MonthlyCrawler:
             'review_comments': review_comments
         }
     
-    def crawl_commits_by_month(self, owner: str, repo: str, month: str, max_per_month: int = 3) -> List[Dict]:
+    def crawl_commits_by_month(self, owner: str, repo: str, month: str, max_per_month: int = 50) -> List[Dict]:
         """
         按月份爬取Commits（只保留文本信息：message和author name）
         month格式: 'YYYY-MM'
@@ -462,7 +462,10 @@ class MonthlyCrawler:
         """
         按月份爬取Releases（按发布时间）
         month格式: 'YYYY-MM'
-        限制最多爬取5页，避免卡住
+        限制最多爬取10页，避免卡住
+        
+        注意：有些仓库（如 odoo/odoo）使用 Tags 而非 Releases，
+        如果 Releases 为空，则尝试从 Tags 获取版本信息
         """
         
         year, month_num = map(int, month.split('-'))
@@ -474,7 +477,7 @@ class MonthlyCrawler:
         
         releases = []
         page = 1
-        max_pages = 5  # 限制最多5页，避免卡住
+        max_pages = 10  # 限制最多10页
         
         while page <= max_pages:
             url = f"{self.base_url}/repos/{owner}/{repo}/releases"
@@ -494,9 +497,15 @@ class MonthlyCrawler:
             for release in data:
                 published_at = release.get('published_at')
                 if not published_at:
+                    # 尝试使用 created_at
+                    published_at = release.get('created_at')
+                if not published_at:
                     continue
                 
-                pub_date = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                try:
+                    pub_date = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                except:
+                    continue
                 
                 if start_date <= pub_date < end_date:
                     releases.append({
@@ -512,11 +521,73 @@ class MonthlyCrawler:
                     })
                 elif pub_date < start_date:
                     # 已经过了目标月份，停止
-                    return releases
+                    break
             
             page += 1
         
+        # 如果没有找到 Releases，尝试获取 Tags（某些项目只使用 Tags）
+        if not releases:
+            releases = self._crawl_tags_by_month(owner, repo, month, start_date, end_date)
+        
         return releases
+    
+    def _crawl_tags_by_month(self, owner: str, repo: str, month: str, 
+                             start_date: datetime, end_date: datetime) -> List[Dict]:
+        """
+        从 Tags 获取版本信息（作为 Releases 的备选）
+        """
+        tags = []
+        page = 1
+        max_pages = 5
+        
+        while page <= max_pages:
+            url = f"{self.base_url}/repos/{owner}/{repo}/tags"
+            params = {
+                'per_page': 100,
+                'page': page
+            }
+            
+            response = self._safe_request(url, params)
+            if not response:
+                break
+            
+            data = response.json()
+            if not data:
+                break
+            
+            for tag in data:
+                # Tags 没有直接的时间信息，需要通过 commit 获取
+                commit_url = tag.get('commit', {}).get('url')
+                if commit_url:
+                    commit_response = self._safe_request(commit_url)
+                    if commit_response:
+                        commit_data = commit_response.json()
+                        commit_date_str = commit_data.get('commit', {}).get('committer', {}).get('date')
+                        if commit_date_str:
+                            try:
+                                commit_date = datetime.fromisoformat(commit_date_str.replace('Z', '+00:00'))
+                                if start_date <= commit_date < end_date:
+                                    tags.append({
+                                        'tag_name': tag.get('name', ''),
+                                        'name': tag.get('name', ''),
+                                        'body': '',  # Tags 没有 body
+                                        'created_at': commit_date_str,
+                                        'published_at': commit_date_str,
+                                        'author': commit_data.get('commit', {}).get('author', {}).get('name', ''),
+                                        'url': f"https://github.com/{owner}/{repo}/releases/tag/{tag.get('name', '')}",
+                                        'prerelease': False,
+                                        'draft': False,
+                                        'is_tag': True  # 标记这是从 Tag 获取的
+                                    })
+                                elif commit_date < start_date:
+                                    # 已经过了目标月份
+                                    return tags
+                            except:
+                                pass
+            
+            page += 1
+        
+        return tags
     
     def crawl_discussions_by_month(self, owner: str, repo: str, month: str, max_per_month: int = 3) -> List[Dict]:
         """
@@ -771,7 +842,7 @@ class MonthlyCrawler:
         
         return months
     
-    def crawl_all_months(self, owner: str, repo: str, max_per_month: int = 3, progress_callback=None, use_graphql: bool = False) -> Dict:
+    def crawl_all_months(self, owner: str, repo: str, max_per_month: int = 50, progress_callback=None, use_graphql: bool = False) -> Dict:
         """
         爬取所有月份的数据（使用GraphQL API和并发请求优化）
         返回格式：
@@ -812,20 +883,13 @@ class MonthlyCrawler:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             
             def crawl_single_month(month: str) -> tuple:
-                """爬取单个月份的数据（已移除PR爬取，GraphQL失败时回退到REST API）"""
+                """爬取单个月份的数据（只爬取 Issues 和 Commits）"""
                 try:
                     result = graphql_crawler.crawl_month_batch(owner, repo, month, max_per_month)
-                    # 补充 Discussions 和 Events（这些需要额外调用）
-                    discussions = self.crawl_discussions_by_month(owner, repo, month, max_per_month)
-                    events = self.crawl_events_by_month(owner, repo, month, max_per_month * 3)
                     return month, {
                         'month': month,
                         'issues': result.get('issues', []),
-                        'prs': [],  # 不再爬取 PR
-                        'commits': result.get('commits', []),
-                        'releases': result.get('releases', []),
-                        'discussions': discussions,
-                        'events': events
+                        'commits': result.get('commits', [])
                     }
                 except Exception as e:
                     error_msg = str(e)
@@ -837,28 +901,17 @@ class MonthlyCrawler:
                             # 使用REST API回退
                             issues = self.crawl_issues_by_month(owner, repo, month, max_per_month)
                             commits = self.crawl_commits_by_month(owner, repo, month, max_per_month)
-                            releases = self.crawl_releases_by_month(owner, repo, month)
-                            discussions = self.crawl_discussions_by_month(owner, repo, month, max_per_month)
-                            events = self.crawl_events_by_month(owner, repo, month, max_per_month * 3)
                             return month, {
                                 'month': month,
                                 'issues': issues,
-                                'prs': [],  # 不再爬取 PR
-                                'commits': commits,
-                                'releases': releases,
-                                'discussions': discussions,
-                                'events': events
+                                'commits': commits
                             }
                         except Exception as rest_error:
                             print(f"  ⚠ REST API也失败 ({month}): {str(rest_error)[:100]}")
                             return month, {
                                 'month': month,
                                 'issues': [],
-                                'prs': [],
-                                'commits': [],
-                                'releases': [],
-                                'discussions': [],
-                                'events': []
+                                'commits': []
                             }
                     else:
                         # 其他错误，直接返回空数据
@@ -866,11 +919,7 @@ class MonthlyCrawler:
                         return month, {
                             'month': month,
                             'issues': [],
-                            'prs': [],
-                            'commits': [],
-                            'releases': [],
-                            'discussions': [],
-                            'events': []
+                            'commits': []
                         }
             
             # 使用线程池并发爬取（降低并发数到2以减少 rate limit）
@@ -891,7 +940,7 @@ class MonthlyCrawler:
                             f'Issues:{len(month_data.get("issues", []))} Commits:{len(month_data.get("commits", []))} Discussions:{len(month_data.get("discussions", []))}',
                             progress
                         )
-                    print(f"  [{completed}/{total_months}] {month}: Issues:{len(month_data.get('issues', []))} Commits:{len(month_data.get('commits', []))} Releases:{len(month_data.get('releases', []))} Discussions:{len(month_data.get('discussions', []))} Events:{len(month_data.get('events', []))}")
+                    print(f"  [{completed}/{total_months}] {month}: Issues:{len(month_data.get('issues', []))} Commits:{len(month_data.get('commits', []))}")
         else:
             # 使用REST API（默认，更稳定，串行执行）
             print(f"  [INFO] 使用 REST API（稳定可靠）")
@@ -905,17 +954,13 @@ class MonthlyCrawler:
                 month_data = {
                     'month': month,
                     'issues': [],
-                    'prs': [],  # 不再爬取 PR
-                    'commits': [],
-                    'releases': [],
-                    'discussions': [],  # 新增：社区讨论
-                    'events': []  # 新增：仓库事件
+                    'commits': []
                 }
                 
-                # 爬取Issues（Top-3热度，轮换token）
+                # 爬取Issues（按热度排序，轮换token）
                 if len(self.tokens) > 1:
                     self.switch_token()
-                print(f"  - Issues (Top-3热度)...")
+                print(f"  - Issues (最多{max_per_month}个)...")
                 issues = self.crawl_issues_by_month(owner, repo, month, max_per_month)
                 month_data['issues'] = issues
                 print(f"    获取 {len(issues)} 个Issues")
@@ -923,34 +968,10 @@ class MonthlyCrawler:
                 # 爬取Commits（只保留文本信息，轮换token）
                 if len(self.tokens) > 1:
                     self.switch_token()
-                print(f"  - Commits (文本信息)...")
+                print(f"  - Commits (最多{max_per_month}个)...")
                 commits = self.crawl_commits_by_month(owner, repo, month, max_per_month)
                 month_data['commits'] = commits
                 print(f"    获取 {len(commits)} 个Commits")
-                
-                # 爬取Releases（轮换token）
-                if len(self.tokens) > 1:
-                    self.switch_token()
-                print(f"  - Releases...")
-                releases = self.crawl_releases_by_month(owner, repo, month)
-                month_data['releases'] = releases
-                print(f"    获取 {len(releases)} 个Releases")
-                
-                # 爬取Discussions（社区讨论，轮换token）
-                if len(self.tokens) > 1:
-                    self.switch_token()
-                print(f"  - Discussions (社区讨论)...")
-                discussions = self.crawl_discussions_by_month(owner, repo, month, max_per_month)
-                month_data['discussions'] = discussions
-                print(f"    获取 {len(discussions)} 个Discussions")
-                
-                # 爬取Events（仓库事件，只有最近90天有数据）
-                if len(self.tokens) > 1:
-                    self.switch_token()
-                print(f"  - Events (仓库事件)...")
-                events = self.crawl_events_by_month(owner, repo, month, max_per_month * 3)
-                month_data['events'] = events
-                print(f"    获取 {len(events)} 个Events")
                 
                 monthly_data[month] = month_data
         

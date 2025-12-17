@@ -83,13 +83,29 @@ export interface EventData {
   state?: string
 }
 
+export interface ProjectSummary {
+  aiSummary: string
+  issueStats: {
+    feature: number
+    bug: number
+    question: number
+    other: number
+    total: number
+  }
+  dataRange: {
+    start: string | null
+    end: string | null
+    months_count: number
+  }
+}
+
 export interface DemoData {
   repoKey: string
-  repoInfo: RepoInfo
+  repoInfo?: RepoInfo
   timeseries?: TimeSeriesData
   groupedTimeseries?: GroupedTimeSeriesData
   issueCategories: IssueData[]
   monthlyKeywords: Record<string, KeywordData[]>
-  waves: WaveData[]
+  projectSummary?: ProjectSummary | null
   error?: string
 }

@@ -26,21 +26,30 @@ qa_agent = QAAgent()
 # 预测器实例
 predictor = LLMTimeSeriesPredictor(enable_cache=True)
 
-# OpenDigger MCP 客户端（可选）
-try:
-    from mcp_client import get_mcp_client
-    mcp_client = get_mcp_client()
-    MCP_AVAILABLE = True
-except Exception as e:
-    print(f"警告: OpenDigger MCP 客户端不可用: {e}")
-    MCP_AVAILABLE = False
-    mcp_client = None
-
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """健康检查"""
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
+
+
+@app.route('/api/reload', methods=['POST'])
+def reload_data():
+    """重新加载数据"""
+    try:
+        # 重新初始化数据服务以加载新数据
+        data_service.__init__()
+        repos = data_service.get_loaded_repos()
+        return jsonify({
+            'status': 'ok',
+            'message': '数据重新加载成功',
+            'repos': repos
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 
 @app.route('/api/repos', methods=['GET'])
@@ -107,6 +116,7 @@ def get_issues_by_month(repo_key):
     """
     获取按月对齐的 Issue 数据
     包含：标签分类、高频关键词、重大事件
+    返回格式与前端期望一致：{ categories: [...], monthlyKeywords: {...} }
     """
     month = request.args.get('month')  # 可选参数，获取特定月份
     
@@ -115,8 +125,59 @@ def get_issues_by_month(repo_key):
         if '_' in repo_key and '/' not in repo_key:
             repo_key = repo_key.replace('_', '/')
         
+        # 优先使用预计算的 Issue 分类数据
+        actual_key = data_service._normalize_repo_key(repo_key)
+        
+        if actual_key in data_service.loaded_issue_classification:
+            # 使用预计算的数据
+            classification_data = data_service.loaded_issue_classification[actual_key]
+            by_month = classification_data.get('by_month', {})
+            labels = classification_data.get('labels', {
+                'feature': '功能需求', 'bug': 'Bug修复', 
+                'question': '社区咨询', 'other': '其他'
+            })
+            
+            categories = [
+                {
+                    'month': m,
+                    'total': data.get('total', 0),
+                    'categories': {
+                        labels.get('feature', '功能需求'): data.get('feature', 0),
+                        labels.get('bug', 'Bug修复'): data.get('bug', 0),
+                        labels.get('question', '社区咨询'): data.get('question', 0),
+                        labels.get('other', '其他'): data.get('other', 0)
+                    }
+                }
+                for m, data in sorted(by_month.items())
+            ]
+            
+            return jsonify({
+                'categories': categories,
+                'monthlyKeywords': {}
+            })
+        
+        # 回退到从文本数据计算
         issues_data = data_service.get_aligned_issues(repo_key, month)
-        return jsonify(issues_data)
+        
+        # 转换为前端期望的格式
+        categories = [
+            {
+                'month': m,
+                'total': data.get('total', 0),
+                'categories': data.get('categories', {})
+            }
+            for m, data in issues_data.get('monthlyData', {}).items()
+        ]
+        
+        monthly_keywords = {
+            m: data.get('keywords', [])
+            for m, data in issues_data.get('monthlyData', {}).items()
+        }
+        
+        return jsonify({
+            'categories': sorted(categories, key=lambda x: x['month']),
+            'monthlyKeywords': monthly_keywords
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -450,12 +511,12 @@ def crawl_repository():
         if request.method == 'GET':
             owner = request.args.get('owner', '').strip()
             repo = request.args.get('repo', '').strip()
-            max_per_month = int(request.args.get('max_per_month', '3'))
+            max_per_month = int(request.args.get('max_per_month', '50'))
         else:
             data = request.json or {}
             owner = data.get('owner', '').strip()
             repo = data.get('repo', '').strip()
-            max_per_month = data.get('max_per_month', 3)
+            max_per_month = data.get('max_per_month', 50)
         
         if not owner or not repo:
             return jsonify({'error': '请提供仓库所有者和仓库名'}), 400
@@ -526,7 +587,7 @@ def crawl_repository():
                         data_service.loaded_text[project_name].append(repo_info_doc)
                 
                 # 将OpenDigger数据转换为data_service期望的格式
-                # 定义所有25个指标，确保即使缺失也用0填充（用于模型训练）
+                # 定义所有19个指标，确保即使缺失也用0填充（用于模型训练）
                 all_metrics = {
                     'OpenRank': 'openrank',
                     '活跃度': 'activity',
@@ -639,128 +700,6 @@ def crawl_repository():
         response.timeout = 600
         return response
         
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-# ========== OpenDigger MCP API 端点 ==========
-
-@app.route('/api/opendigger/metric', methods=['GET'])
-def get_opendigger_metric():
-    """获取单个 OpenDigger 指标"""
-    if not MCP_AVAILABLE:
-        return jsonify({'error': 'OpenDigger MCP 服务不可用'}), 503
-    
-    try:
-        owner = request.args.get('owner', '').strip()
-        repo = request.args.get('repo', '').strip()
-        metric_name = request.args.get('metric', '').strip()
-        platform = request.args.get('platform', 'GitHub').strip()
-        
-        if not owner or not repo or not metric_name:
-            return jsonify({'error': '请提供 owner, repo 和 metric 参数'}), 400
-        
-        result = mcp_client.get_metric(owner, repo, metric_name, platform)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/opendigger/metrics/batch', methods=['POST'])
-def get_opendigger_metrics_batch():
-    """批量获取多个 OpenDigger 指标"""
-    if not MCP_AVAILABLE:
-        return jsonify({'error': 'OpenDigger MCP 服务不可用'}), 503
-    
-    try:
-        data = request.json or {}
-        owner = data.get('owner', '').strip()
-        repo = data.get('repo', '').strip()
-        metrics = data.get('metrics', [])
-        platform = data.get('platform', 'GitHub').strip()
-        
-        if not owner or not repo or not metrics:
-            return jsonify({'error': '请提供 owner, repo 和 metrics 参数'}), 400
-        
-        result = mcp_client.get_metrics_batch(owner, repo, metrics, platform)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/opendigger/compare', methods=['POST'])
-def compare_repositories():
-    """对比多个仓库"""
-    if not MCP_AVAILABLE:
-        return jsonify({'error': 'OpenDigger MCP 服务不可用'}), 503
-    
-    try:
-        data = request.json or {}
-        repos = data.get('repos', [])
-        metrics = data.get('metrics', [])
-        platform = data.get('platform', 'GitHub').strip()
-        
-        if not repos or not metrics:
-            return jsonify({'error': '请提供 repos 和 metrics 参数'}), 400
-        
-        result = mcp_client.compare_repositories(repos, metrics, platform)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/opendigger/trends', methods=['GET'])
-def analyze_trends():
-    """分析趋势"""
-    if not MCP_AVAILABLE:
-        return jsonify({'error': 'OpenDigger MCP 服务不可用'}), 503
-    
-    try:
-        owner = request.args.get('owner', '').strip()
-        repo = request.args.get('repo', '').strip()
-        metric_name = request.args.get('metric', '').strip()
-        start_date = request.args.get('start_date', '').strip() or None
-        end_date = request.args.get('end_date', '').strip() or None
-        platform = request.args.get('platform', 'GitHub').strip()
-        
-        if not owner or not repo or not metric_name:
-            return jsonify({'error': '请提供 owner, repo 和 metric 参数'}), 400
-        
-        result = mcp_client.analyze_trends(owner, repo, metric_name, start_date, end_date, platform)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/opendigger/ecosystem', methods=['GET'])
-def get_ecosystem_insights():
-    """获取生态系统洞察"""
-    if not MCP_AVAILABLE:
-        return jsonify({'error': 'OpenDigger MCP 服务不可用'}), 503
-    
-    try:
-        owner = request.args.get('owner', '').strip()
-        repo = request.args.get('repo', '').strip()
-        platform = request.args.get('platform', 'GitHub').strip()
-        
-        if not owner or not repo:
-            return jsonify({'error': '请提供 owner 和 repo 参数'}), 400
-        
-        result = mcp_client.get_ecosystem_insights(owner, repo, platform)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/opendigger/health', methods=['GET'])
-def mcp_server_health():
-    """获取 MCP 服务器健康状态"""
-    if not MCP_AVAILABLE:
-        return jsonify({'error': 'OpenDigger MCP 服务不可用'}), 503
-    
-    try:
-        result = mcp_client.server_health()
-        return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

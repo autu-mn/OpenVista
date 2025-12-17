@@ -1,26 +1,25 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Activity, TrendingUp, GitBranch, Users, AlertCircle, FileText, BarChart3, RefreshCw } from 'lucide-react'
+import { Activity, TrendingUp, GitBranch, Users, AlertCircle, FileText, BarChart3, RefreshCw, Sparkles, ChevronDown, ChevronUp } from 'lucide-react'
 import GroupedTimeSeriesChart from './components/GroupedTimeSeriesChart'
 import IssueAnalysis from './components/IssueAnalysis'
-import WaveAnalysis from './components/WaveAnalysis'
 import Header from './components/Header'
 import StatsCard from './components/StatsCard'
 import ProjectSearch from './components/ProjectSearch'
 import HomePage from './components/HomePage'
 import RepoHeader from './components/RepoHeader'
-import OpenDiggerAnalysis from './components/OpenDiggerAnalysis'
-import type { DemoData, GroupedTimeSeriesData, IssueData, WaveData } from './types'
+import type { DemoData, GroupedTimeSeriesData, IssueData } from './types'
 
 function App() {
   const [data, setData] = useState<DemoData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'timeseries' | 'issues' | 'analysis' | 'opendigger'>('timeseries')
+  const [activeTab, setActiveTab] = useState<'timeseries' | 'issues'>('timeseries')
   const [currentProject, setCurrentProject] = useState<string>('')
   const [showHomePage, setShowHomePage] = useState(true)
   const [repoInfo, setRepoInfo] = useState<any>(null)
+  const [summaryExpanded, setSummaryExpanded] = useState(false)
 
   useEffect(() => {
     // 如果已经有项目且不在首页，加载数据
@@ -114,20 +113,16 @@ function App() {
         console.warn('Issue数据获取失败:', issuesData.error)
       }
       
-      // 获取波动分析
-      const analysisResponse = await fetch(`/api/analysis/${encodeURIComponent(repoKey)}`)
-      const analysisData = await analysisResponse.json()
-      
-      if (analysisData.error) {
-        console.warn('分析数据获取失败:', analysisData.error)
-      }
+      // 获取项目摘要（包含 AI 摘要）
+      const summaryResponse = await fetch(`/api/repo/${encodeURIComponent(repoKey)}/summary`)
+      const summaryData = await summaryResponse.json()
       
       setData({
         repoKey: projectName,
         groupedTimeseries: timeseriesData.error ? null : timeseriesData,
         issueCategories: issuesData.categories || [],
         monthlyKeywords: issuesData.monthlyKeywords || {},
-        waves: analysisData.waves || []
+        projectSummary: summaryData.projectSummary || null
       })
     } catch (err) {
       setError('无法连接到后端服务，请确保后端已启动')
@@ -316,6 +311,93 @@ function App() {
           />
         </motion.div>
 
+        {/* AI 项目摘要 */}
+        {data?.projectSummary?.aiSummary && (
+          <motion.div
+            className="mb-8 bg-gradient-to-br from-cyber-card/60 to-cyber-card/30 rounded-xl border border-cyber-primary/30 overflow-hidden"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.1 }}
+          >
+            <button
+              onClick={() => setSummaryExpanded(!summaryExpanded)}
+              className="w-full px-6 py-4 flex items-center justify-between hover:bg-cyber-primary/5 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-cyber-primary/20 rounded-lg">
+                  <Sparkles className="w-5 h-5 text-cyber-primary" />
+                </div>
+                <div className="text-left">
+                  <h3 className="text-lg font-display font-bold text-cyber-text">
+                    AI 项目摘要
+                  </h3>
+                  <p className="text-sm text-cyber-muted font-chinese">
+                    基于 {data.projectSummary.dataRange?.months_count || 0} 个月数据生成
+                    {data.projectSummary.dataRange?.start && data.projectSummary.dataRange?.end && (
+                      <span> · {data.projectSummary.dataRange.start} 至 {data.projectSummary.dataRange.end}</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+              {summaryExpanded ? (
+                <ChevronUp className="w-5 h-5 text-cyber-muted" />
+              ) : (
+                <ChevronDown className="w-5 h-5 text-cyber-muted" />
+              )}
+            </button>
+            
+            <AnimatePresence>
+              {summaryExpanded && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.3 }}
+                  className="overflow-hidden"
+                >
+                  <div className="px-6 pb-6">
+                    <div className="p-4 bg-cyber-bg/50 rounded-lg border border-cyber-border">
+                      <p className="text-cyber-text font-chinese leading-relaxed whitespace-pre-wrap">
+                        {data.projectSummary.aiSummary}
+                      </p>
+                    </div>
+                    
+                    {/* Issue 统计摘要 */}
+                    {data.projectSummary.issueStats && (
+                      <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="p-3 bg-cyber-primary/10 rounded-lg text-center">
+                          <div className="text-2xl font-display font-bold text-cyber-primary">
+                            {data.projectSummary.issueStats.feature || 0}
+                          </div>
+                          <div className="text-xs text-cyber-muted font-chinese">功能需求</div>
+                        </div>
+                        <div className="p-3 bg-cyber-accent/10 rounded-lg text-center">
+                          <div className="text-2xl font-display font-bold text-cyber-accent">
+                            {data.projectSummary.issueStats.bug || 0}
+                          </div>
+                          <div className="text-xs text-cyber-muted font-chinese">Bug 修复</div>
+                        </div>
+                        <div className="p-3 bg-cyber-secondary/10 rounded-lg text-center">
+                          <div className="text-2xl font-display font-bold text-cyber-secondary">
+                            {data.projectSummary.issueStats.question || 0}
+                          </div>
+                          <div className="text-xs text-cyber-muted font-chinese">社区咨询</div>
+                        </div>
+                        <div className="p-3 bg-cyber-muted/10 rounded-lg text-center">
+                          <div className="text-2xl font-display font-bold text-cyber-text">
+                            {data.projectSummary.issueStats.total || 0}
+                          </div>
+                          <div className="text-xs text-cyber-muted font-chinese">Issue 总数</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.div>
+        )}
+
         {/* 标签页导航 */}
         <motion.div 
           className="flex gap-4 mb-6"
@@ -335,19 +417,6 @@ function App() {
             onClick={() => setActiveTab('issues')}
             icon={<FileText className="w-4 h-4" />}
             label="Issue 分析"
-          />
-          <TabButton
-            active={activeTab === 'analysis'}
-            onClick={() => setActiveTab('analysis')}
-            icon={<AlertCircle className="w-4 h-4" />}
-            label="波动归因"
-            badge={data?.waves?.length || 0}
-          />
-          <TabButton
-            active={activeTab === 'opendigger'}
-            onClick={() => setActiveTab('opendigger')}
-            icon={<BarChart3 className="w-4 h-4" />}
-            label="OpenDigger 分析"
           />
         </motion.div>
 
@@ -383,41 +452,6 @@ function App() {
                 selectedMonth={selectedMonth}
                 onMonthSelect={setSelectedMonth}
               />
-            </motion.div>
-          )}
-          
-          {activeTab === 'analysis' && (
-            <motion.div
-              key="analysis"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              transition={{ duration: 0.3 }}
-            >
-              <WaveAnalysis 
-                waves={data?.waves as WaveData[]}
-                onWaveClick={(wave) => {
-                  setSelectedMonth(wave.month)
-                  setActiveTab('issues')
-                }}
-              />
-            </motion.div>
-          )}
-          
-          {activeTab === 'opendigger' && (
-            <motion.div
-              key="opendigger"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              transition={{ duration: 0.3 }}
-            >
-              {currentProject && (() => {
-                const [owner, repo] = currentProject.includes('/') 
-                  ? currentProject.split('/') 
-                  : currentProject.replace('_', '/').split('/')
-                return <OpenDiggerAnalysis owner={owner} repo={repo} />
-              })()}
             </motion.div>
           )}
         </AnimatePresence>

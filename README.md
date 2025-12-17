@@ -1,15 +1,60 @@
 # DataPulse
 
-## 功能特点
+GitHub 仓库生态画像分析平台
 
-- **数据采集**：自动爬取 GitHub 仓库数据（Issues、PRs、Commits 等，但是有缺失值，issue、PR、commit太多了，用处不大。目前只用README.md和DOCS试试）
-- **可视化展示**：数据展示（不好看，不完善，有缺失）
-- **模型集成**： MaxKB 知识库 + Deepseek 大语言模型 + ALI 分词模型（效果一般，还没接到前端）
-- **时序分析**：未完成
-- **Issue分析**：未完成
-- **波动归因**：未完成
-- **可解释性描述**：未完成
-- **整体开源生态分析评级**：未完成
+## 项目架构
+
+```
+DataPulse/
+├── backend/                    # 后端服务 (Python Flask)
+│   ├── Agent/                  # AI/MaxKB 层
+│   │   ├── deepseek_client.py  # DeepSeek API 客户端
+│   │   └── qa_agent.py         # 问答 Agent
+│   │
+│   ├── DataProcessor/          # 数据采集层
+│   │   ├── crawl_monthly_data.py      # 主爬虫入口
+│   │   ├── monthly_crawler.py         # 月度数据爬虫
+│   │   ├── github_text_crawler.py     # GitHub 文本爬虫
+│   │   ├── monthly_data_processor.py  # 数据处理器
+│   │   ├── maxkb_uploader.py          # MaxKB 上传
+│   │   └── data/                      # 爬取的数据
+│   │
+│   ├── LLM2TSA/                # 时序分析层
+│   │   ├── predictor.py        # LLM 辅助时序预测
+│   │   └── enhancer.py         # 时序增强器
+│   │
+│   ├── app.py                  # Flask API 入口
+│   └── data_service.py         # 数据服务层
+│
+└── frontend/                   # 前端 (React + TypeScript)
+    └── src/
+        ├── App.tsx             # 主应用
+        └── components/         # UI 组件
+```
+
+## 功能模块
+
+### 1. 数据采集层 (DataProcessor/)
+- 从 GitHub API 爬取仓库数据（Issues、PRs、Commits、Releases）
+- 从 OpenDigger 获取 19 个指标（OpenRank、活跃度、Star数等）
+- 按月份组织数据，生成时序数据
+- Issue 分类统计（功能需求/Bug修复/社区咨询）
+- 项目总体 AI 摘要
+
+### 2. AI/MaxKB 层 (Agent/)
+- 生成项目摘要（入门介绍）
+- DeepSeek 大模型问答（项目使用方法、开发流程）
+- MaxKB 知识库集成（上传文档供 RAG 检索）
+
+### 3. 时序分析层 (LLM2TSA/)
+- 双塔模型（时序特征 + 文本语义联合建模）
+- LLM 辅助时序预测
+- 指标趋势预测
+
+### 4. 前端展示层 (frontend/)
+- 首页：输入仓库名，触发爬取
+- 时序分析：展示 OpenDigger 指标的时序图表
+- Issue 分析：按月展示 Issue 关键词和分类
 
 ## 运行指南
 
@@ -35,29 +80,16 @@ npm run dev
 
 ## 配置说明
 
-在 `backend/DataProcessor/` 目录下创建 `.env` 文件，然后填写必需字段
-（这个发不了，Github会查得到，他看到了就push不上去了）
+在 `backend/DataProcessor/` 目录下创建 `.env` 文件：
 
-
-## 项目结构
-
-```
-DataPulse/
-├── backend/                 # 后端服务
-│   ├── Agent/              # AI 问答模块
-│   ├── DataProcessor/      # 数据处理模块
-│   ├── app.py             # Flask 应用入口
-│   └── data_service.py    # 数据服务
-├── frontend/               # 前端应用
-│   └── src/
-│       ├── components/    # React 组件
-│       └── pages/         # 页面组件
-└── README.md
+```env
+GITHUB_TOKEN=your_github_token
+DEEPSEEK_API_KEY=your_deepseek_api_key
 ```
 
-## 使用说明
+## 使用流程
 
-1. 在首页输入仓库所有者和仓库名
+1. 在首页输入仓库所有者和仓库名（如 `pytorch/pytorch`）
 2. 点击"开始分析"，等待爬取完成
 3. 自动跳转到数据分析页面
-4. 查看时序、Issue等数据
+4. 查看时序图表、Issue 分析等数据

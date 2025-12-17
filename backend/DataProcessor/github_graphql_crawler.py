@@ -724,7 +724,7 @@ class GitHubGraphQLCrawler:
         
         return all_releases[:max_count]
     
-    def crawl_month_batch(self, owner: str, repo: str, month: str, max_per_month: int = 3) -> Dict:
+    def crawl_month_batch(self, owner: str, repo: str, month: str, max_per_month: int = 50) -> Dict:
         """
         批量爬取指定月份的数据（Issues Top-3热度、Commits文本、Releases）
         已移除 PR 爬取以节省 API 配额

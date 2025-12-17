@@ -473,37 +473,61 @@ class GitHubTextCrawler:
         
         all_file_paths = []
         
-        # 尝试多个可能的文档目录（扩展搜索范围）
-        doc_dirs = [
-            'docs', 'documentation', 'doc', 'wiki', 'guides', 'guide',
-            '.github', 'content', 'articles', 'tutorials', 'examples',
-            'src/docs', 'lib/docs', 'resources', 'assets/docs'
+        # 需要过滤的无用文档模式（法律文件、CLA协议等）
+        skip_patterns = [
+            'cla/', 'cla-', '-cla.', '/cla/', 
+            'legal/', 'copyright', 'patent',
+            'contributor-license', 'individual-',
+            'corporate-', 'icla', 'ccla'
         ]
-        for doc_dir in doc_dirs:
+        
+        def should_skip(file_path):
+            """判断是否应该跳过此文件"""
+            lower_path = file_path.lower()
+            # 跳过 CLA 和法律文件
+            for pattern in skip_patterns:
+                if pattern in lower_path:
+                    return True
+            return False
+        
+        # 优先搜索核心文档目录
+        priority_dirs = ['docs', 'documentation', 'doc', '.github']
+        for doc_dir in priority_dirs:
             if len(all_file_paths) >= max_files:
                 break
             paths = self._collect_doc_file_paths(owner, repo, doc_dir, max_files - len(all_file_paths), 0, max_depth)
+            # 过滤无用文档
+            paths = [p for p in paths if not should_skip(p)]
             all_file_paths.extend(paths)
             if paths:
                 print(f"    在 {doc_dir}/ 目录找到 {len(paths)} 个文档")
         
-        # 搜索根目录下的所有markdown文件
+        # 递归搜索所有子目录中的 README.md 文件
+        if len(all_file_paths) < max_files:
+            print(f"    递归搜索所有 README.md 文件...")
+            readme_paths = self._collect_all_readmes(owner, repo, max_files - len(all_file_paths))
+            all_file_paths.extend(readme_paths)
+            if readme_paths:
+                print(f"    找到 {len(readme_paths)} 个 README.md 文件")
+        
+        # 搜索根目录下的 Markdown 文件
         if len(all_file_paths) < max_files:
             print(f"    搜索根目录下的 Markdown 文件...")
             root_paths = self._collect_root_md_files(owner, repo, max_files - len(all_file_paths))
+            root_paths = [p for p in root_paths if not should_skip(p)]
             all_file_paths.extend(root_paths)
             if root_paths:
                 print(f"    在根目录找到 {len(root_paths)} 个 Markdown 文件")
         
         # 如果还不够，搜索更多子目录
         if len(all_file_paths) < max_files:
-            extra_dirs = ['src', 'lib', 'packages', 'extensions', 'plugins', 'modules']
+            extra_dirs = ['src', 'lib', 'packages', 'extensions', 'plugins', 'modules', 'wiki', 'guides']
             for extra_dir in extra_dirs:
                 if len(all_file_paths) >= max_files:
                     break
                 paths = self._collect_doc_file_paths(owner, repo, extra_dir, max_files - len(all_file_paths), 0, 2)
-                # 只添加 .md 文件
-                md_paths = [p for p in paths if p.lower().endswith('.md')]
+                # 只添加 .md 文件，并过滤无用文档
+                md_paths = [p for p in paths if p.lower().endswith('.md') and not should_skip(p)]
                 all_file_paths.extend(md_paths)
                 if md_paths:
                     print(f"    在 {extra_dir}/ 目录找到 {len(md_paths)} 个 Markdown 文件")
@@ -569,6 +593,62 @@ class GitHubTextCrawler:
                         md_files.append(item['path'])
         
         return md_files
+    
+    def _collect_all_readmes(self, owner, repo, max_files=20, depth=0, max_depth=4, path=''):
+        """递归搜索所有子目录中的 README.md 文件"""
+        if depth > max_depth:
+            return []
+        
+        url = f"{self.base_url}/repos/{owner}/{repo}/contents/{path}"
+        response = self.safe_request(url)
+        
+        if not response or response.status_code != 200:
+            return []
+        
+        try:
+            items = response.json()
+            if not isinstance(items, list):
+                return []
+        except:
+            return []
+        
+        readme_paths = []
+        subdirs = []
+        
+        for item in items:
+            if len(readme_paths) >= max_files:
+                break
+            
+            name_lower = item['name'].lower()
+            
+            # 找到 README 文件
+            if item['type'] == 'file' and name_lower in ['readme.md', 'readme.markdown', 'readme.rst', 'readme.txt', 'readme']:
+                # 跳过根目录的 README（已经单独获取）
+                if path != '':
+                    readme_paths.append(item['path'])
+            
+            # 收集子目录（排除无用目录）
+            elif item['type'] == 'dir':
+                dir_name = item['name'].lower()
+                # 跳过不需要搜索的目录
+                skip_dirs = ['node_modules', 'vendor', 'dist', 'build', '.git', '__pycache__', 
+                             'venv', 'env', '.venv', 'cla', 'legal', 'test', 'tests', 
+                             'benchmark', 'benchmarks', '.idea', '.vscode']
+                if dir_name not in skip_dirs and not dir_name.startswith('.'):
+                    subdirs.append(item['path'])
+        
+        # 递归搜索子目录
+        if depth < max_depth and len(readme_paths) < max_files:
+            for subdir in subdirs[:10]:  # 限制子目录搜索数量
+                if len(readme_paths) >= max_files:
+                    break
+                sub_readmes = self._collect_all_readmes(
+                    owner, repo, max_files - len(readme_paths), 
+                    depth + 1, max_depth, subdir
+                )
+                readme_paths.extend(sub_readmes)
+        
+        return readme_paths
     
     def get_license_file(self, owner, repo):
         """获取LICENSE文件（支持多种格式，并发优化）"""
@@ -681,11 +761,16 @@ class GitHubTextCrawler:
     
     def get_important_md_files(self, owner, repo, max_files=20):
         """获取仓库根目录下的重要 Markdown 文件（并发优化，避免早停）"""
-        print(f"  获取根目录重要 Markdown 文件（最多 {max_files} 个，并发）...")
+        print(f"  获取根目录重要文档文件（最多 {max_files} 个，并发）...")
         important_names = [
+            # 核心文档
             'CONTRIBUTING.md', 'CHANGELOG.md', 'HISTORY.md',
-            'LICENSE.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md',
+            'LICENSE', 'LICENSE.md', 'LICENSE.txt',
+            'SECURITY.md', 'CODE_OF_CONDUCT.md',
             'ROADMAP.md', 'ARCHITECTURE.md', 'DESIGN.md',
+            # 引用信息
+            'CITATION.cff', 'CITATION.md', 'CITATION',
+            # 使用指南
             'FAQ.md', 'INSTALL.md', 'USAGE.md',
             'TUTORIAL.md', 'GUIDE.md', 'QUICKSTART.md',
             'GETTING_STARTED.md', 'DEVELOPMENT.md', 'MAINTAINERS.md',

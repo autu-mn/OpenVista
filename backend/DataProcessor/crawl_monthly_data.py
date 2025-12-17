@@ -23,7 +23,7 @@ from backend.DataProcessor.monthly_data_processor import MonthlyDataProcessor
 from backend.DataProcessor.github_text_crawler import OpenDiggerMetrics, GitHubTextCrawler
 
 
-def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_llm_summary: bool = True):
+def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 50, enable_llm_summary: bool = True, skip_docs: bool = False):
     """
     爬取项目的月度数据
     
@@ -32,6 +32,7 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
         repo: 仓库名称
         max_per_month: 每月最多爬取的数量
         enable_llm_summary: 是否启用LLM摘要生成
+        skip_docs: 是否跳过描述性文档爬取（README、LICENSE、docs等）
     """
     print(f"\n{'='*80}")
     print(f"开始爬取项目: {owner}/{repo}")
@@ -74,52 +75,58 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
     print(f"  ✓ 指标数据准备完成（OpenDigger: {len(opendigger_data)} 个）")
     
     # ========== 步骤2: 爬取描述文本（预处理后，上传到知识库）==========
-    print("\n[2/4] 爬取描述文本（README、LICENSE、文档等，优化：最多20个文档）...")
-    # 使用并发请求提升速度
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    static_docs = {}
+    static_texts = {}
     
-    def fetch_static_docs():
-        """并发获取静态文档"""
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {
-                'repo_info': executor.submit(text_crawler.get_repo_info, owner, repo),
-                'readme': executor.submit(text_crawler.get_readme, owner, repo),
-                'license': executor.submit(text_crawler.get_license_file, owner, repo),
-                'important_md_files': executor.submit(text_crawler.get_important_md_files, owner, repo, max_files=20),
-                'config_files': executor.submit(text_crawler.get_config_files, owner, repo)
-            }
-            
-            results = {}
-            for key, future in futures.items():
-                try:
-                    results[key] = future.result(timeout=30)
-                except Exception as e:
-                    print(f"  ⚠ 获取{key}失败: {str(e)}")
-                    results[key] = None if key != 'important_md_files' else []
-            
-            # 获取文档文件（限制为35个，但保留重要文档，避免早停）
-            # 先获取重要文档，再补充其他文档（搜索多个目录和根目录）
-            important_docs = results.get('important_md_files', [])
-            remaining_count = max(0, 35 - len(important_docs))
-            
-            if remaining_count > 0:
-                docs_files = text_crawler.get_docs_files(owner, repo, max_files=remaining_count, max_depth=3)
-                results['docs_files'] = docs_files
-                results['all_doc_files'] = important_docs + docs_files[:remaining_count]
-            else:
-                results['docs_files'] = []
-                results['all_doc_files'] = important_docs[:35]
-            
-            print(f"  ✓ 文档爬取完成: 重要文档 {len(important_docs)} 个 + 其他文档 {len(results.get('docs_files', []))} 个 = 总计 {len(results.get('all_doc_files', []))} 个")
-            
-            return results
-    
-    static_docs = fetch_static_docs()
-    print(f"  ✓ 获取了静态文档（共 {len(static_docs.get('all_doc_files', []))} 个文档文件）")
-    print(f"    - README: {'✓' if static_docs.get('readme') else '✗'}")
-    print(f"    - LICENSE: {'✓' if static_docs.get('license') else '✗'}")
-    print(f"    - 重要文档: {len(static_docs.get('important_md_files', []))} 个")
-    print(f"    - 配置文件: {len(static_docs.get('config_files', []))} 个")
+    if skip_docs:
+        print("\n[2/4] 跳过描述文本爬取（skip_docs=True）")
+    else:
+        print("\n[2/4] 爬取描述文本（README、LICENSE、文档等，优化：最多20个文档）...")
+        # 使用并发请求提升速度
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def fetch_static_docs():
+            """并发获取静态文档"""
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {
+                    'repo_info': executor.submit(text_crawler.get_repo_info, owner, repo),
+                    'readme': executor.submit(text_crawler.get_readme, owner, repo),
+                    'license': executor.submit(text_crawler.get_license_file, owner, repo),
+                    'important_md_files': executor.submit(text_crawler.get_important_md_files, owner, repo, max_files=20),
+                    'config_files': executor.submit(text_crawler.get_config_files, owner, repo)
+                }
+                
+                results = {}
+                for key, future in futures.items():
+                    try:
+                        results[key] = future.result(timeout=30)
+                    except Exception as e:
+                        print(f"  ⚠ 获取{key}失败: {str(e)}")
+                        results[key] = None if key != 'important_md_files' else []
+                
+                # 获取文档文件（限制为35个，但保留重要文档，避免早停）
+                # 先获取重要文档，再补充其他文档（搜索多个目录和根目录）
+                important_docs = results.get('important_md_files', [])
+                remaining_count = max(0, 35 - len(important_docs))
+                
+                if remaining_count > 0:
+                    docs_files = text_crawler.get_docs_files(owner, repo, max_files=remaining_count, max_depth=3)
+                    results['docs_files'] = docs_files
+                    results['all_doc_files'] = important_docs + docs_files[:remaining_count]
+                else:
+                    results['docs_files'] = []
+                    results['all_doc_files'] = important_docs[:35]
+                
+                print(f"  ✓ 文档爬取完成: 重要文档 {len(important_docs)} 个 + 其他文档 {len(results.get('docs_files', []))} 个 = 总计 {len(results.get('all_doc_files', []))} 个")
+                
+                return results
+        
+        static_docs = fetch_static_docs()
+        print(f"  ✓ 获取了静态文档（共 {len(static_docs.get('all_doc_files', []))} 个文档文件）")
+        print(f"    - README: {'✓' if static_docs.get('readme') else '✗'}")
+        print(f"    - LICENSE: {'✓' if static_docs.get('license') else '✗'}")
+        print(f"    - 重要文档: {len(static_docs.get('important_md_files', []))} 个")
+        print(f"    - 配置文件: {len(static_docs.get('config_files', []))} 个")
     
     # 初始化LLM客户端（用于摘要生成）
     llm_client = None
@@ -142,9 +149,6 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
     
     processor = MonthlyDataProcessor(llm_client=llm_client, skip_llm_summary=not enable_llm_summary)
     
-    # 提取静态文本
-    static_texts = processor.extract_static_texts(static_docs)
-    
     # 创建输出目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = os.path.join(
@@ -155,10 +159,14 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
     )
     os.makedirs(output_dir, exist_ok=True)
     
-    # 保存并上传到MaxKB
-    print("\n  → 保存描述文本并上传到MaxKB...")
-    maxkb_dir = processor.save_for_maxkb(static_texts, output_dir)
-    processor.upload_to_maxkb(maxkb_dir, owner, repo)
+    # 提取静态文本并保存到MaxKB（如果不跳过文档）
+    if not skip_docs and static_docs:
+        static_texts = processor.extract_static_texts(static_docs)
+        print("\n  → 保存描述文本并上传到MaxKB...")
+        maxkb_dir = processor.save_for_maxkb(static_texts, output_dir)
+        processor.upload_to_maxkb(maxkb_dir, owner, repo)
+    else:
+        static_texts = {}
     
     # ========== 步骤3: 爬取issue等时序文本 ==========
     print("\n[3/4] 爬取Issue/Commit/Release时序文本（已移除PR爬取，Issues只爬Top-3热度）...")
@@ -176,17 +184,17 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 3, enable_
     
     # ========== 步骤4: 时序文本+时序指标，按照月份时序对齐 ==========
     print("\n[4/4] 时序对齐：合并时序文本和时序指标...")
-    # 确保所有25个指标都被包含，缺失的用0填充（用于模型训练）
+    # 确保所有19个指标都被包含，缺失的用0填充（用于模型训练）
     complete_opendigger_metrics = processor._ensure_all_metrics(opendigger_data)
     processed_data = processor.process_monthly_data_for_model(monthly_data, complete_opendigger_metrics)
     print(f"  ✓ 已完成时序对齐，共 {len(processed_data)} 个月的数据")
-    print(f"  ✓ 所有25个指标已保存（缺失的用0填充，用于模型训练）")
+    print(f"  ✓ 所有19个指标已保存（缺失的用0填充，用于模型训练）")
     
     # 保存所有数据
     print("\n  → 保存数据...")
     
-    # 保存原始月度数据（确保所有25个指标都被保存，缺失的用0填充）
-    # 定义所有25个指标
+    # 保存原始月度数据（确保所有19个指标都被保存，缺失的用0填充）
+    # 定义所有19个指标
     all_metrics_config = {
         'OpenRank': 'openrank',
         '活跃度': 'activity',
