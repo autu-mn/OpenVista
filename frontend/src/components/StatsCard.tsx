@@ -120,39 +120,3 @@ export default function StatsCard({ icon, title, value, change, color }: StatsCa
   )
 }
 
-
-              'text-cyber-muted bg-cyber-muted/10'
-            )}>
-              {isPositive ? <TrendingUp className="w-3 h-3" /> : 
-               isNegative ? <TrendingDown className="w-3 h-3" /> : 
-               <Minus className="w-3 h-3" />}
-              <span>{change}</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1 text-xs text-cyber-muted/50 px-2 py-1">
-              <Minus className="w-3 h-3" />
-              <span>--</span>
-            </div>
-          )}
-        </div>
-
-        {/* 数值（突出显示） */}
-        <div className="mb-1">
-          <p className={clsx('text-2xl font-display font-bold', classes.accent)}>
-            {formatValue(value)}
-          </p>
-        </div>
-
-        {/* 标题（指标名称） */}
-        <h3 className="text-cyber-muted text-xs font-chinese tracking-wide">{title}</h3>
-      </div>
-
-      {/* 底部装饰线 */}
-      <div className={clsx(
-        'absolute bottom-0 left-4 right-4 h-0.5 rounded-full opacity-50',
-        classes.bg
-      )} />
-    </motion.div>
-  )
-}
-

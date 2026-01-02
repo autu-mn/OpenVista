@@ -541,6 +541,3 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick, repoKey }: 
     </div>
   )
 }
-
-  )
-}

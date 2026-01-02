@@ -394,34 +394,6 @@ export default function DataAnalysisPanel({
   )
 }
 
-import { BarChart3, TrendingUp, Activity, Zap, Info, Layers, Sliders, Sparkles, Bot } from 'lucide-react'
-import PredictionChart from './PredictionChart'
-import TrendAnalysisPanel from './TrendAnalysisPanel'
-import ComparisonAnalysisPanel from './ComparisonAnalysisPanel'
-import MultiMetricPrediction from './MultiMetricPrediction'
-import PredictionExplanation from './PredictionExplanation'
-import ScenarioSimulator from './ScenarioSimulator'
-import AIChat from './AIChat'
-
-interface DataAnalysisPanelProps {
-  repoKey: string
-  groupedData?: any
-  onClose?: () => void
-}
-
-type AnalysisMode = 'single' | 'multi' | 'scenario'
-
-export default function DataAnalysisPanel({ 
-  repoKey, 
-  groupedData,
-  onClose 
-}: DataAnalysisPanelProps) {
-  const [selectedMetric, setSelectedMetric] = useState<{
-    groupKey: string
-    metricKey: string
-    metricName: string
-  } | null>(null)
-
   const [analysisType, setAnalysisType] = useState<'prediction' | 'trend' | 'comparison' | 'ai'>('prediction')
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('single')
   const [showExplanation, setShowExplanation] = useState(true)
