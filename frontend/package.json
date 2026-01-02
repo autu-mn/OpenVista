@@ -1,8 +1,8 @@
 {
-  "name": "datapulse-frontend",
+  "name": "openvista-frontend",
   "version": "1.0.0",
   "private": true,
-  "description": "GitHub 仓库生态画像分析平台 - 时序数据可视化与归因分析",
+  "description": "OpenVista - GitHub 仓库生态画像分析平台",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

@@ -29,19 +29,15 @@ class MonthlyDataProcessor:
     """按月数据处理"""
     
     def __init__(self, llm_client=None, skip_llm_summary=False):
+        self.llm_client = llm_client
         self.skip_llm_summary = skip_llm_summary
-        
-        if skip_llm_summary:
-            self.llm_client = None
-        else:
-            self.llm_client = llm_client
-        if not self.llm_client and LLM_AVAILABLE:
+        if not self.llm_client and LLM_AVAILABLE and not skip_llm_summary:
             try:
                 self.llm_client = DeepSeekClient()
             except:
                 print("  ⚠ 无法初始化LLM客户端")
         
-        # 定义所有19个指标（用于确保所有指标都被保存，缺失的用0填充）
+        # 定义所有25个指标（用于确保所有指标都被保存，缺失的用0填充）
         self.all_metrics_list = [
             'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数',
             '新增贡献者', '贡献者', '不活跃贡献者', '总线因子',
@@ -52,14 +48,14 @@ class MonthlyDataProcessor:
     
     def _ensure_all_metrics(self, opendigger_metrics: Dict) -> Dict:
         """
-        确保所有19个指标都存在
+        确保所有25个指标都存在
         优先级：OpenDigger > GitHub API补充 > 0填充（用于模型训练）
         
         Args:
             opendigger_metrics: OpenDigger返回的指标数据（可能已包含GitHub API补充的数据）
             
         Returns:
-            完整的指标数据（所有19个指标都存在）
+            完整的指标数据（所有25个指标都存在）
         """
         complete_metrics = {}
         
@@ -247,7 +243,7 @@ class MonthlyDataProcessor:
             'opendigger_metrics': {
               'OpenRank': 10.5,
               '活跃度': 20.3,
-              ... (所有19个指标，缺失的用0填充)
+              ... (所有25个指标，缺失的用0填充)
             }
           },
           ...
@@ -264,12 +260,26 @@ class MonthlyDataProcessor:
             '代码新增行数', '代码删除行数', '代码变更总行数'
         ]
         
+        total_months = len(monthly_data)
+        print(f"    正在处理 {total_months} 个月的数据...")
+        
+        # 不再生成每月摘要，改为在 save_for_model 中生成总体摘要
+        
+        processed_count = 0
         for month, month_data in monthly_data.items():
+            processed_count += 1
+            
+            # 每处理10个月显示一次进度
+            if processed_count % 10 == 0 or processed_count == total_months:
+                print(f"    进度: {processed_count}/{total_months} ({processed_count*100//total_months}%)")
             # 提取数值特征
             timeseries_features = self._extract_timeseries_features(month, opendigger_metrics)
             
-            # 拼接完整文本（不再按月生成 LLM 摘要，统一在最后生成总摘要）
+            # 拼接完整文本
             full_text = self._concatenate_full_text(month_data)
+            
+            # 不再生成每月摘要，改为在 save_for_model 中生成总体摘要
+            llm_summary = ""
             
             # 提取该月的所有OpenDigger指标（缺失的用0填充，用于模型训练）
             month_metrics = {}
@@ -286,19 +296,15 @@ class MonthlyDataProcessor:
                     # 指标不存在，用0填充
                     month_metrics[metric_name] = 0.0
             
-            # Issue 分类统计（功能需求、Bug修复、社区咨询）
-            issues = month_data.get('issues', [])
-            issue_classification = self._classify_issues(issues)
-            
-            # 组织数据（移除 llm_summary，改为总摘要）
+            # 组织数据
             processed[month] = {
                 'timeseries_features': timeseries_features,
-                'opendigger_metrics': month_metrics,  # 保存所有19个指标，缺失的用0填充
-                'issue_classification': issue_classification,  # Issue 分类统计
+                'opendigger_metrics': month_metrics,  # 保存所有25个指标，缺失的用0填充
                 'text_data': {
                     'full_text': full_text,
+                    'llm_summary': llm_summary,
                     'breakdown': {
-                        'issues_text': self._extract_issues_text(issues),
+                        'issues_text': self._extract_issues_text(month_data.get('issues', [])),
                         'prs_text': self._extract_prs_text(month_data.get('prs', [])),
                         'commits_text': self._extract_commits_text(month_data.get('commits', [])),
                         'releases_text': self._extract_releases_text(month_data.get('releases', []))
@@ -306,6 +312,7 @@ class MonthlyDataProcessor:
                 }
             }
         
+        print(f"    ✓ 处理完成: 共 {len(processed)} 个月的数据")
         return processed
     
     def _extract_timeseries_features(self, month: str, opendigger_metrics: Dict) -> List[float]:
@@ -376,84 +383,6 @@ class MonthlyDataProcessor:
         
         return "\n\n".join(texts)
     
-    def _classify_issues(self, issues: List[Dict]) -> Dict:
-        """
-        对 Issues 进行分类统计
-        分类：功能需求(feature)、Bug修复(bug)、社区咨询(question)、其他(other)
-        
-        常见 GitHub 标签映射：
-        - Bug修复：bug, defect, fix, error, crash, regression
-        - 功能需求：enhancement, feature, feature request, improvement, new feature
-        - 社区咨询：question, help, help wanted, discussion, support, needs-help
-        """
-        # 定义标签映射规则（小写匹配）
-        bug_labels = {'bug', 'defect', 'fix', 'error', 'crash', 'regression', 'type:bug', 'type: bug', 'bugfix'}
-        feature_labels = {'enhancement', 'feature', 'feature request', 'improvement', 'new feature', 
-                         'type:enhancement', 'type: enhancement', 'feature-request', 'rfc'}
-        question_labels = {'question', 'help', 'help wanted', 'discussion', 'support', 'needs-help',
-                          'help-wanted', 'type:question', 'type: question'}
-        
-        classification = {
-            'feature': {'count': 0, 'issues': []},  # 功能需求
-            'bug': {'count': 0, 'issues': []},       # Bug修复
-            'question': {'count': 0, 'issues': []},  # 社区咨询
-            'other': {'count': 0, 'issues': []}      # 其他
-        }
-        
-        for issue in issues:
-            labels = [label.lower() for label in issue.get('labels', [])]
-            issue_info = {
-                'number': issue.get('number'),
-                'title': issue.get('title', ''),
-                'labels': issue.get('labels', []),
-                'state': issue.get('state', '')
-            }
-            
-            # 按优先级分类：bug > feature > question > other
-            classified = False
-            
-            # 检查是否是 Bug
-            for label in labels:
-                if label in bug_labels or any(bl in label for bl in ['bug', 'defect', 'error']):
-                    classification['bug']['count'] += 1
-                    classification['bug']['issues'].append(issue_info)
-                    classified = True
-                    break
-            
-            if not classified:
-                # 检查是否是功能需求
-                for label in labels:
-                    if label in feature_labels or any(fl in label for fl in ['enhancement', 'feature', 'rfc']):
-                        classification['feature']['count'] += 1
-                        classification['feature']['issues'].append(issue_info)
-                        classified = True
-                        break
-            
-            if not classified:
-                # 检查是否是社区咨询
-                for label in labels:
-                    if label in question_labels or any(ql in label for ql in ['question', 'help', 'support', 'discussion']):
-                        classification['question']['count'] += 1
-                        classification['question']['issues'].append(issue_info)
-                        classified = True
-                        break
-            
-            if not classified:
-                # 其他
-                classification['other']['count'] += 1
-                classification['other']['issues'].append(issue_info)
-        
-        # 添加汇总信息
-        classification['summary'] = {
-            'total': len(issues),
-            'feature_count': classification['feature']['count'],
-            'bug_count': classification['bug']['count'],
-            'question_count': classification['question']['count'],
-            'other_count': classification['other']['count']
-        }
-        
-        return classification
-    
     def _extract_issues_text(self, issues: List[Dict]) -> str:
         """提取Issues的完整文本"""
         texts = []
@@ -516,8 +445,112 @@ class MonthlyDataProcessor:
         
         return "\n---\n".join(texts)
     
+    def _generate_project_summary(self, processed_data: Dict, repo_info: Dict = None) -> str:
+        """
+        生成项目总体 AI 摘要
+        
+        Args:
+            processed_data: 所有月份的处理后数据
+            repo_info: 仓库基本信息
+            
+        Returns:
+            项目总体摘要文本
+        """
+        if not self.llm_client:
+            return "LLM客户端不可用，无法生成摘要"
+        
+        # 汇总所有月份的关键信息
+        total_months = len(processed_data)
+        months_list = sorted(processed_data.keys())
+        date_range = f"{months_list[0]} 至 {months_list[-1]}" if months_list else "未知"
+        
+        # 收集最近几个月的关键文本和指标（用于生成摘要）
+        recent_months_texts = []
+        recent_months = sorted(processed_data.keys(), reverse=True)[:6]  # 最近6个月
+        
+        # 汇总关键指标（从 opendigger_metrics 中提取）
+        avg_openrank = 0
+        avg_activity = 0
+        total_stars = 0
+        total_forks = 0
+        
+        for month in recent_months:
+            month_data = processed_data[month]
+            text_data = month_data.get('text_data', {})
+            full_text = text_data.get('full_text', '')
+            if full_text:
+                recent_months_texts.append(f"【{month}】\n{full_text[:500]}")  # 限制每月的文本长度
+            
+            # 提取关键指标
+            metrics = month_data.get('opendigger_metrics', {})
+            if metrics:
+                avg_openrank += metrics.get('OpenRank', 0)
+                avg_activity += metrics.get('活跃度', 0)
+                total_stars = max(total_stars, metrics.get('Star数', 0))  # 取最大值
+                total_forks = max(total_forks, metrics.get('Fork数', 0))  # 取最大值
+        
+        if recent_months:
+            avg_openrank = avg_openrank / len(recent_months)
+            avg_activity = avg_activity / len(recent_months)
+        
+        # 获取仓库基本信息
+        repo_name = repo_info.get('full_name', '') if repo_info else ''
+        repo_description = repo_info.get('description', '') if repo_info else ''
+        repo_language = repo_info.get('language', '') if repo_info else ''
+        repo_stars = repo_info.get('stargazers_count', 0) if repo_info else 0
+        
+        # 构建提示词
+        prompt = f"""你是开源项目分析专家。请为以下项目生成一个全面的项目摘要（3-5段话，突出项目特点、发展趋势和主要活动）。
+
+【项目基本信息】
+- 项目名称: {repo_name}
+- 项目描述: {repo_description}
+- 主要语言: {repo_language}
+- Star数: {repo_stars}
+
+【数据统计】
+- 数据时间范围: {date_range}（共 {total_months} 个月）
+- 平均OpenRank: {avg_openrank:.2f}
+- 平均活跃度: {avg_activity:.2f}
+- Star数: {total_stars}
+- Fork数: {total_forks}
+
+【最近活动（最近6个月的关键内容）】
+{'\n'.join(recent_months_texts[:3]) if recent_months_texts else '暂无最近活动数据'}
+
+请生成一个全面的项目摘要，包括：
+1. 项目定位和核心功能
+2. 项目的发展趋势和活跃度
+3. 主要的技术活动和社区参与情况
+4. 项目的整体健康状况和未来展望
+
+摘要应该简洁、专业，突出项目的核心价值和特点。"""
+        
+        try:
+            # 使用超时处理
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+            
+            def call_llm():
+                return self.llm_client.ask(prompt, context="")
+            
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(call_llm)
+                try:
+                    summary = future.result(timeout=60)  # 总体摘要允许更长时间（60秒）
+                    result = summary.strip() if summary else "无法生成项目摘要"
+                except FutureTimeoutError:
+                    print(f"    ⚠ LLM摘要生成超时（60秒），使用默认摘要")
+                    result = f"{repo_name} 是一个活跃的开源项目，在 {date_range} 期间共收集了 {total_months} 个月的数据。项目主要使用 {repo_language} 语言开发，获得了 {repo_stars} 个 Star，平均 OpenRank 为 {avg_openrank:.2f}。"
+            
+            return result
+        except Exception as e:
+            print(f"    ⚠ 项目总体摘要生成失败: {str(e)}")
+            return f"{repo_name} 是一个开源项目，在 {date_range} 期间共收集了 {total_months} 个月的数据。项目主要使用 {repo_language} 语言开发。"
+    
     def _generate_llm_summary(self, month_data: Dict, full_text: str) -> str:
         """使用LLM生成月度摘要"""
+        if self.skip_llm_summary:
+            return ""
         if not self.llm_client:
             return "LLM客户端不可用，无法生成摘要"
         
@@ -544,89 +577,25 @@ class MonthlyDataProcessor:
         
         try:
             # DeepSeekClient使用ask方法，不是generate方法
-            summary = self.llm_client.ask(prompt, context="")
-            return summary.strip() if summary else f"该月有{stats['issues_count']}个Issues，{stats['prs_count']}个PRs，{stats['commits_count']}个Commits。"
+            # 添加超时处理（30秒）- 使用 concurrent.futures 支持跨平台
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+            
+            def call_llm():
+                return self.llm_client.ask(prompt, context="")
+            
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(call_llm)
+                try:
+                    summary = future.result(timeout=30)  # 30秒超时
+                    result = summary.strip() if summary else f"该月有{stats['issues_count']}个Issues，{stats['prs_count']}个PRs，{stats['commits_count']}个Commits。"
+                except FutureTimeoutError:
+                    print(f"  ⚠ LLM摘要生成超时（30秒），跳过该月摘要")
+                    return f"该月有{stats['issues_count']}个Issues，{stats['prs_count']}个PRs，{stats['commits_count']}个Commits。"
+            
+            return result
         except Exception as e:
             print(f"  ⚠ LLM摘要生成失败: {str(e)}")
             return f"该月有{stats['issues_count']}个Issues，{stats['prs_count']}个PRs，{stats['commits_count']}个Commits。"
-    
-    def generate_project_summary(self, processed_data: Dict, repo_info: Dict, issue_stats: Dict) -> str:
-        """
-        生成项目总体 AI 摘要（只调用一次 LLM）
-        """
-        if not self.llm_client:
-            return "LLM客户端不可用，无法生成摘要"
-        
-        # 统计总体数据
-        months = sorted(processed_data.keys())
-        total_months = len(months)
-        start_month = months[0] if months else "未知"
-        end_month = months[-1] if months else "未知"
-        
-        # 提取热门话题（从最近几个月的 Issues 中）
-        recent_months = months[-6:] if len(months) >= 6 else months
-        hot_issues = []
-        for month in recent_months:
-            month_data = processed_data.get(month, {})
-            issues_text = month_data.get('text_data', {}).get('breakdown', {}).get('issues_text', '')
-            if issues_text and len(issues_text) > 50:
-                # 取前500字符
-                hot_issues.append(f"[{month}] {issues_text[:500]}")
-        
-        hot_issues_text = "\n".join(hot_issues[-5:])  # 最多5条
-        
-        # 获取指标趋势（最近几个月）
-        metric_trends = []
-        for metric in ['OpenRank', '活跃度', 'Star数']:
-            values = []
-            for month in recent_months:
-                month_metrics = processed_data.get(month, {}).get('opendigger_metrics', {})
-                if metric in month_metrics:
-                    values.append(month_metrics[metric])
-            if values:
-                avg = sum(values) / len(values)
-                trend = "↑" if len(values) >= 2 and values[-1] > values[0] else "↓" if len(values) >= 2 and values[-1] < values[0] else "→"
-                metric_trends.append(f"{metric}: {avg:.1f} ({trend})")
-        
-        # 构建 prompt
-        prompt = f"""你是开源项目分析专家。请根据以下信息，生成一段项目总结（200-400字）。
-
-【项目基本信息】
-- 仓库: {repo_info.get('full_name', '未知')}
-- 描述: {repo_info.get('description', '无')}
-- Stars: {repo_info.get('stargazers_count', 0)}
-- Forks: {repo_info.get('forks_count', 0)}
-- 主要语言: {repo_info.get('language', '未知')}
-
-【数据时间范围】
-- 时间跨度: {start_month} 至 {end_month}（共 {total_months} 个月）
-
-【Issue 分类统计】
-- 功能需求: {issue_stats.get('feature', 0)} 个
-- Bug修复: {issue_stats.get('bug', 0)} 个
-- 社区咨询: {issue_stats.get('question', 0)} 个
-- 其他: {issue_stats.get('other', 0)} 个
-
-【近期指标趋势】
-{chr(10).join(metric_trends) if metric_trends else '暂无数据'}
-
-【近期热门话题（Issue摘要）】
-{hot_issues_text if hot_issues_text else '暂无数据'}
-
-请生成一段简洁但全面的项目总结，包括：
-1. 项目概述（是什么、做什么）
-2. 项目活跃度和健康状况分析
-3. 社区关注的主要问题和方向
-4. 简要趋势总结"""
-
-        try:
-            print("  → 正在生成项目总体 AI 摘要...")
-            summary = self.llm_client.ask(prompt, context="")
-            print("  ✓ AI 摘要生成完成")
-            return summary.strip() if summary else "无法生成摘要"
-        except Exception as e:
-            print(f"  ⚠ AI 摘要生成失败: {str(e)}")
-            return f"项目 {repo_info.get('full_name', '未知')} 共有 {total_months} 个月的数据，时间范围从 {start_month} 到 {end_month}。"
     
     def save_for_maxkb(self, static_texts: Dict, output_dir: str):
         """保存用于MaxKB的静态文本"""
@@ -756,7 +725,14 @@ class MonthlyDataProcessor:
             traceback.print_exc()
     
     def save_for_model(self, processed_data: Dict, output_dir: str, repo_info: Dict = None):
-        """保存用于双塔模型的时序数据"""
+        """
+        保存用于双塔模型的时序数据，并生成项目总体 AI 摘要
+        
+        Args:
+            processed_data: 处理后的月度数据
+            output_dir: 输出目录
+            repo_info: 仓库信息（用于生成总体摘要）
+        """
         model_dir = os.path.join(output_dir, 'timeseries_for_model')
         os.makedirs(model_dir, exist_ok=True)
         
@@ -766,85 +742,35 @@ class MonthlyDataProcessor:
             with open(month_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         
-        # 保存汇总文件（用于模型训练）
+        # 保存汇总文件
         summary_file = os.path.join(model_dir, 'all_months.json')
         with open(summary_file, 'w', encoding='utf-8') as f:
             json.dump(processed_data, f, ensure_ascii=False, indent=2)
         
-        # **关键**：同时保存为 timeseries_data.json 格式（用于前端和预测）
-        # 转换为 data_service.py 期望的格式：{month: {指标名: 值, ...}, ...}
-        timeseries_for_frontend = {}
-        for month, data in processed_data.items():
-            # 提取 opendigger_metrics 作为该月的指标数据
-            month_metrics = data.get('opendigger_metrics', {})
-            timeseries_for_frontend[month] = month_metrics
+        print(f"  ✓ 双塔模型数据已保存到: {model_dir}")
+        print(f"    共 {len(processed_data)} 个月的数据")
         
-        # 保存到 output_dir（不是 model_dir），以便 data_service.py 能找到
-        timeseries_file = os.path.join(output_dir, 'timeseries_data.json')
-        with open(timeseries_file, 'w', encoding='utf-8') as f:
-            json.dump(timeseries_for_frontend, f, ensure_ascii=False, indent=2)
-        
-        # **新增**：保存 Issue 分类统计汇总（用于前端展示）
-        issue_classification_summary = {}
-        total_stats = {'feature': 0, 'bug': 0, 'question': 0, 'other': 0, 'total': 0}
-        
-        for month, data in processed_data.items():
-            classification = data.get('issue_classification', {})
-            summary = classification.get('summary', {})
+        # 生成项目总体 AI 摘要
+        if not self.skip_llm_summary:
+            print(f"\n  → 生成项目总体 AI 摘要...")
+            project_summary = self._generate_project_summary(processed_data, repo_info)
             
-            issue_classification_summary[month] = {
-                'feature': summary.get('feature_count', 0),
-                'bug': summary.get('bug_count', 0),
-                'question': summary.get('question_count', 0),
-                'other': summary.get('other_count', 0),
-                'total': summary.get('total', 0)
+            # 保存总体摘要
+            summary_data = {
+                'ai_summary': project_summary,
+                'total_months': len(processed_data),
+                'date_range': {
+                    'start': min(processed_data.keys()) if processed_data else None,
+                    'end': max(processed_data.keys()) if processed_data else None
+                },
+                'repo_info': repo_info if repo_info else {}
             }
             
-            # 累计总数
-            total_stats['feature'] += summary.get('feature_count', 0)
-            total_stats['bug'] += summary.get('bug_count', 0)
-            total_stats['question'] += summary.get('question_count', 0)
-            total_stats['other'] += summary.get('other_count', 0)
-            total_stats['total'] += summary.get('total', 0)
-        
-        issue_classification_file = os.path.join(output_dir, 'issue_classification.json')
-        with open(issue_classification_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                'by_month': issue_classification_summary,
-                'total': total_stats,
-                'labels': {
-                    'feature': '功能需求',
-                    'bug': 'Bug修复',
-                    'question': '社区咨询',
-                    'other': '其他'
-                }
-            }, f, ensure_ascii=False, indent=2)
-        
-        # **新增**：生成项目总体 AI 摘要（只调用一次 LLM）
-        ai_summary = ""
-        if self.llm_client and repo_info:
-            ai_summary = self.generate_project_summary(processed_data, repo_info, total_stats)
-        
-        # 保存项目摘要
-        project_summary_file = os.path.join(output_dir, 'project_summary.json')
-        with open(project_summary_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                'repo_info': repo_info or {},
-                'ai_summary': ai_summary,
-                'issue_stats': total_stats,
-                'data_range': {
-                    'start': min(processed_data.keys()) if processed_data else None,
-                    'end': max(processed_data.keys()) if processed_data else None,
-                    'months_count': len(processed_data)
-                }
-            }, f, ensure_ascii=False, indent=2)
-        
-        print(f"  ✓ 双塔模型数据已保存到: {model_dir}")
-        print(f"  ✓ 时序数据已保存到: {timeseries_file}（用于前端和预测）")
-        print(f"  ✓ Issue分类统计已保存到: {issue_classification_file}")
-        print(f"  ✓ 项目摘要已保存到: {project_summary_file}")
-        print(f"    共 {len(processed_data)} 个月的数据")
-        print(f"    Issue分类：功能需求 {total_stats['feature']} | Bug修复 {total_stats['bug']} | 社区咨询 {total_stats['question']} | 其他 {total_stats['other']}")
-        if ai_summary:
-            print(f"    AI摘要：已生成（{len(ai_summary)} 字符）")
+            project_summary_file = os.path.join(model_dir, 'project_summary.json')
+            with open(project_summary_file, 'w', encoding='utf-8') as f:
+                json.dump(summary_data, f, ensure_ascii=False, indent=2)
+            
+            print(f"  ✓ 项目总体摘要已保存到: {project_summary_file}")
+        else:
+            print(f"  ℹ 已跳过 LLM 摘要生成（skip_llm_summary=True）")
 

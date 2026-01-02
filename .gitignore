@@ -29,6 +29,7 @@ wheels/
 venv/
 ENV/
 env/
+.venv/
 
 # Node
 node_modules/
@@ -47,29 +48,60 @@ dist-ssr/
 *.swo
 *~
 .DS_Store
+Thumbs.db
 
-# 数据文件
+# 数据文件（保留示例数据，忽略大量爬取数据）
 backend/DataProcessor/data/
 backend/Data/
-*.json
-*.csv
-*.xlsx
-!requirements.txt
-!package.json
-!package-lock.json
-!tsconfig.json
+data/batch_crawl_progress.json
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/tsconfig.json
+!frontend/tsconfig.node.json
 
-# 测试文件
+# 测试和缓存
 .pytest_cache/
 .coverage
 htmlcov/
 *.cover
+backend/LLM2TSA/cache/
 
 # 日志
 *.log
 logs/
+crawl_log.txt
 
 # 临时文件
 *.tmp
 *.temp
 .cache/
+
+# LaTeX 编译产物
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+*.toc
+*.lof
+*.lot
+*.bbl
+*.blg
+
+# GitPulse 大型模型文件（保留在本地，不提交到 Git）
+# 这些文件超过 GitHub 的 100MB 限制，需要单独分发
+GitPulse/training/checkpoints/*.pt
+GitPulse/predict/models/*.pt
+GitPulse/Pretrain-data/*.json
+
+# 截图和临时笔记
+*.png
+*.jpg
+*.jpeg
+!GitPulse/paper/figures/*.png
+!frontend/public/*.svg
+*.md.bak
+
+# 爬虫进度文件
+batch_crawl_progress.json
+repo_list.csv

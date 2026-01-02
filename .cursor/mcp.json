@@ -1,0 +1,15 @@
+﻿{
+  "mcpServers": {
+    "open-digger-mcp": {
+      "command": "node",
+      "args": [
+        "D:\\Pycharm\\PycharmProject\\cvProject\\DataPulse\\open-digger-mcp-server\\mcp-server\\dist\\index.js"
+      ],
+      "cwd": "D:\\Pycharm\\PycharmProject\\cvProject\\DataPulse\\open-digger-mcp-server\\mcp-server",
+      "env": {
+        "CACHE_TTL_SECONDS": "300",
+        "NODE_ENV": "production"
+      }
+    }
+  }
+}

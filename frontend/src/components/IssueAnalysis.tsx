@@ -4,7 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell, PieChart, Pie
 } from 'recharts'
-import { Tag, TrendingUp, Bug, MessageCircle, ChevronRight, Search } from 'lucide-react'
+import { Tag, TrendingUp, Bug, MessageCircle, ChevronRight, Search, Sparkles, Loader2, Send } from 'lucide-react'
 import type { IssueData, KeywordData } from '../types'
 
 interface IssueAnalysisProps {
@@ -12,6 +12,7 @@ interface IssueAnalysisProps {
   keywords: Record<string, KeywordData[]>
   selectedMonth: string | null
   onMonthSelect: (month: string | null) => void
+  repoKey?: string
 }
 
 const CATEGORY_COLORS = {
@@ -28,9 +29,38 @@ const CATEGORY_ICONS = {
   '其他': Tag
 }
 
-export default function IssueAnalysis({ data, keywords, selectedMonth, onMonthSelect }: IssueAnalysisProps) {
+export default function IssueAnalysis({ data, keywords, selectedMonth, onMonthSelect, repoKey = '' }: IssueAnalysisProps) {
   const [searchMonth, setSearchMonth] = useState('')
   const [viewMode, setViewMode] = useState<'bar' | 'pie'>('bar')
+  const [agentQuestion, setAgentQuestion] = useState('')
+  const [agentAnswer, setAgentAnswer] = useState<string | null>(null)
+  const [agentLoading, setAgentLoading] = useState(false)
+  
+  const handleAgentQuestion = async () => {
+    if (!agentQuestion.trim() || !repoKey) return
+    
+    setAgentLoading(true)
+    setAgentAnswer(null)
+    
+    try {
+      const response = await fetch(`/api/analysis/issues/${encodeURIComponent(repoKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: agentQuestion })
+      })
+      
+      const result = await response.json()
+      if (result.error) {
+        setAgentAnswer(`错误: ${result.error}`)
+      } else {
+        setAgentAnswer(result.answer || '暂无回答')
+      }
+    } catch (err) {
+      setAgentAnswer(`请求失败: ${err instanceof Error ? err.message : '未知错误'}`)
+    } finally {
+      setAgentLoading(false)
+    }
+  }
 
   // 过滤数据
   const filteredData = useMemo(() => {
@@ -286,9 +316,16 @@ export default function IssueAnalysis({ data, keywords, selectedMonth, onMonthSe
               {/* 总数统计 */}
               <div className="p-4 bg-cyber-bg/50 rounded-lg border border-cyber-border">
                 <div className="text-4xl font-display font-bold text-cyber-primary mb-1">
-                  {selectedMonthData.total}
+                  {selectedMonthData.total || selectedMonthData.total_sampled || 0}
                 </div>
-                <div className="text-sm text-cyber-muted font-chinese">Issue 总数</div>
+                <div className="text-sm text-cyber-muted font-chinese">
+                  {selectedMonthData.is_sampled ? '抽样 Issue 数量' : 'Issue 总数'}
+                </div>
+                {selectedMonthData.is_sampled && selectedMonthData.sampling_note && (
+                  <div className="mt-2 text-xs text-cyber-muted/70 font-chinese italic">
+                    {selectedMonthData.sampling_note}
+                  </div>
+                )}
               </div>
 
               {/* 分类详情 */}
@@ -342,6 +379,49 @@ export default function IssueAnalysis({ data, keywords, selectedMonth, onMonthSe
                         {kw.word}
                       </motion.span>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {/* AI Agent 解释 */}
+              {repoKey && (
+                <div className="space-y-3 pt-4 border-t border-cyber-border">
+                  <h4 className="text-sm font-semibold text-cyber-text font-chinese flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-cyber-primary" />
+                    AI 智能分析
+                  </h4>
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={agentQuestion}
+                        onChange={(e) => setAgentQuestion(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && handleAgentQuestion()}
+                        placeholder="询问关于这个月 Issue 的问题..."
+                        className="flex-1 px-3 py-2 bg-cyber-bg border border-cyber-border rounded-lg text-cyber-text text-sm focus:outline-none focus:border-cyber-primary"
+                        disabled={agentLoading}
+                      />
+                      <button
+                        onClick={handleAgentQuestion}
+                        disabled={agentLoading || !agentQuestion.trim()}
+                        className="px-4 py-2 bg-cyber-primary/20 hover:bg-cyber-primary/30 border border-cyber-primary/50 rounded-lg text-cyber-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                      >
+                        {agentLoading ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Send className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
+                    {agentAnswer && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="p-3 bg-cyber-primary/10 border border-cyber-primary/30 rounded-lg text-sm text-cyber-text"
+                      >
+                        {agentAnswer}
+                      </motion.div>
+                    )}
                   </div>
                 </div>
               )}

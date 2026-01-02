@@ -54,9 +54,10 @@ class DataService:
                     'opendigger_PR接受数': {'key': 'PR接受数', 'color': '#4CAF50', 'unit': '个'},
                     'opendigger_变更请求': {'key': '变更请求', 'color': '#2196F3', 'unit': '个'},
                     'opendigger_PR审查': {'key': 'PR审查', 'color': '#FF9800', 'unit': '次'},
-                    'opendigger_代码新增行数': {'key': '代码新增行数', 'color': '#00f5d4', 'unit': '行'},
-                    'opendigger_代码删除行数': {'key': '代码删除行数', 'color': '#ff6b9d', 'unit': '行'},
-                    'opendigger_代码变更总行数': {'key': '代码变更总行数', 'color': '#9C27B0', 'unit': '行'}, 
+                    # 以下指标仅用于可视化，不支持 GitPulse 预测
+                    'opendigger_代码新增行数': {'key': '代码新增行数', 'color': '#00f5d4', 'unit': '行', 'predictable': False},
+                    'opendigger_代码删除行数': {'key': '代码删除行数', 'color': '#ff6b9d', 'unit': '行', 'predictable': False},
+                    'opendigger_代码变更总行数': {'key': '代码变更总行数', 'color': '#9C27B0', 'unit': '行', 'predictable': False}, 
                 }
             },
             'issues': {
@@ -127,7 +128,7 @@ class DataService:
                     latest_folder = data_folders[0]
                     folder_path = os.path.join(item_path, latest_folder)
                     timeseries_file = os.path.join(folder_path, 'timeseries_data.json')
-                    
+                        
                     if os.path.exists(timeseries_file):
                         # 使用项目文件夹名作为repo_key（格式：owner_repo -> owner/repo）
                         repo_key = item.replace('_', '/')
@@ -169,7 +170,25 @@ class DataService:
                 with open(timeseries_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     if isinstance(data, dict):
-                        self.loaded_timeseries[repo_key] = data
+                        # 检查数据格式：如果是按月份组织的格式 {"2020-08": {"OpenRank": 4.76, ...}}
+                        # 需要转换为按指标组织的格式 {"opendigger_OpenRank": {"raw": {"2020-08": 4.76, ...}}}
+                        first_key = list(data.keys())[0] if data else None
+                        if first_key and isinstance(first_key, str) and len(first_key) == 7 and first_key[4] == '-':
+                            # 这是按月份组织的格式，需要转换
+                            timeseries_dict = {}
+                            for month, metrics in data.items():
+                                if isinstance(metrics, dict):
+                                    for metric_name, value in metrics.items():
+                                        # 构建指标键名（添加 opendigger_ 前缀）
+                                        metric_key = f'opendigger_{metric_name}'
+                                        if metric_key not in timeseries_dict:
+                                            timeseries_dict[metric_key] = {'raw': {}}
+                                        timeseries_dict[metric_key]['raw'][month] = value
+                            self.loaded_timeseries[repo_key] = timeseries_dict
+                            print(f"  [OK] 已转换时序数据格式: {len(timeseries_dict)} 个指标")
+                        else:
+                            # 已经是按指标组织的格式，直接使用
+                            self.loaded_timeseries[repo_key] = data
                     elif isinstance(data, list):
                         timeseries_dict = {}
                         for item in data:
@@ -180,6 +199,8 @@ class DataService:
                         if timeseries_dict:
                             self.loaded_timeseries[repo_key] = timeseries_dict
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 print(f"加载时序数据失败 {repo_key}: {e}")
         
         # 加载文本数据
@@ -189,6 +210,53 @@ class DataService:
                     self.loaded_text[repo_key] = json.load(f)
             except Exception as e:
                 print(f"加载文本数据失败 {repo_key}: {e}")
+        
+        # 如果没有文本数据文件，尝试从 metadata.json 和 project_summary.json 构建
+        if repo_key not in self.loaded_text:
+            metadata_file = os.path.join(folder_path, 'metadata.json')
+            project_summary_file = os.path.join(folder_path, 'project_summary.json')
+            
+            text_data = []
+            
+            # 从 metadata.json 提取 repo_info
+            if os.path.exists(metadata_file):
+                try:
+                    with open(metadata_file, 'r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+                        repo_info = metadata.get('repo_info', {})
+                        if repo_info:
+                            # 构建 repo_info 文档（格式与 text_data_structured.json 一致）
+                            text_data.append({
+                                'type': 'repo_info',
+                                'content': json.dumps(repo_info, ensure_ascii=False),
+                                'metadata': {
+                                    'source': 'metadata.json',
+                                    'crawl_time': metadata.get('crawl_time', '')
+                                }
+                            })
+                except Exception as e:
+                    print(f"加载 metadata.json 失败 {repo_key}: {e}")
+            
+            # 从 project_summary.json 提取 repo_info（如果 metadata.json 没有）
+            if not text_data and os.path.exists(project_summary_file):
+                try:
+                    with open(project_summary_file, 'r', encoding='utf-8') as f:
+                        project_summary = json.load(f)
+                        repo_info = project_summary.get('repo_info', {})
+                        if repo_info:
+                            text_data.append({
+                                'type': 'repo_info',
+                                'content': json.dumps(repo_info, ensure_ascii=False),
+                                'metadata': {
+                                    'source': 'project_summary.json'
+                                }
+                            })
+                except Exception as e:
+                    print(f"加载 project_summary.json 失败 {repo_key}: {e}")
+            
+            if text_data:
+                self.loaded_text[repo_key] = text_data
+                print(f"  [OK] 已从 metadata.json 构建文本数据: {len(text_data)} 个文档")
         
         # 加载 Issue 分类数据
         if os.path.exists(issue_classification_file):
@@ -223,11 +291,17 @@ class DataService:
         return result
     
     def _extract_time_range_from_data(self, timeseries_data):
-        """从时序数据中提取时间范围"""
+        """从时序数据中提取时间范围
+        
+        注意：OpenDigger 数据通常有 2-3 个月的延迟，
+        因此我们需要找到实际有有效数据的最后一个月，
+        而不是简单地取时间轴的最后一个月。
+        """
         if not isinstance(timeseries_data, dict):
             return [], None, None
         
         all_months = set()
+        months_with_data = {}  # 记录每个月份有多少指标有非零数据
         
         for metric_name, metric_data in timeseries_data.items():
             if not isinstance(metric_data, dict):
@@ -235,17 +309,27 @@ class DataService:
             raw_data = metric_data.get('raw', {})
             if not isinstance(raw_data, dict):
                 continue
-            for key in raw_data.keys():
+            for key, value in raw_data.items():
                 # 只提取 YYYY-MM 格式的月份数据
                 if re.match(r'^\d{4}-\d{2}$', key):
                     all_months.add(key)
+                    # 记录有非零数据的月份
+                    if value is not None and value != 0:
+                        months_with_data[key] = months_with_data.get(key, 0) + 1
         
         if not all_months:
             return [], None, None
         
         sorted_months = sorted(all_months)
         start_month = sorted_months[0]
+        
+        # 找到最后一个有至少3个指标有数据的月份（避免只有个别指标更新的情况）
+        # 从后往前找，跳过没有足够数据的月份
         end_month = sorted_months[-1]
+        for month in reversed(sorted_months):
+            if months_with_data.get(month, 0) >= 3:  # 至少3个指标有数据
+                end_month = month
+                break
         
         # 生成完整的时间范围
         time_range = self._generate_time_range(start_month, end_month)
@@ -300,6 +384,29 @@ class DataService:
                 return alt_key
         
         return repo_key  # 如果都不存在，返回原始key
+    
+    def get_all_metrics_historical_data(self, repo_key):
+        """
+        获取所有指标的原始历史数据（用于 GitPulse 预测）
+        
+        Args:
+            repo_key: 仓库标识（支持 owner/repo 或 owner_repo 格式）
+        
+        Returns:
+            Dict[str, Dict[str, Dict[str, float]]]: {
+                'opendigger_OpenRank': {'raw': {'2020-08': 4.76, ...}},
+                'opendigger_活跃度': {'raw': {'2020-08': 0.5, ...}},
+                ...
+            }
+            如果仓库不存在或没有数据，返回空字典
+        """
+        repo_key = self._normalize_repo_key(repo_key)
+        
+        if repo_key not in self.loaded_timeseries:
+            return {}
+        
+        # 直接返回已加载的时序数据（已经是正确的格式）
+        return self.loaded_timeseries[repo_key]
     
     def get_grouped_timeseries(self, repo_key):
         """
@@ -499,17 +606,28 @@ class DataService:
         return result
     
     def _process_month_issues(self, month, issues):
-        """处理单月的 Issue 数据"""
+        """
+        处理单月的 Issue 数据（基于抽样数据）
+        
+        注意：Issue 数据是抽样数据，不是全部 Issue。
+        这里返回的是抽样统计结果，用于分析趋势和模式。
+        """
         if not issues:
             return {
                 'month': month,
                 'total': 0,
+                'total_sampled': 0,
+                'is_sampled': True,
+                'sampling_note': '数据为抽样数据，仅供参考',
                 'categories': {'功能需求': 0, 'Bug修复': 0, '社区咨询': 0, '其他': 0},
                 'categoryRatios': {'功能需求': 0, 'Bug修复': 0, '社区咨询': 0, '其他': 0},
                 'keywords': [],
                 'events': [],
                 'issues': []
             }
+        
+        # 记录这是抽样数据
+        total_sampled = len(issues)
         
         # 分类统计
         categories = {'功能需求': 0, 'Bug修复': 0, '社区咨询': 0, '其他': 0}
@@ -552,7 +670,7 @@ class DataService:
                     'state': ''
                 })
         
-        # 计算比例
+        # 计算比例（基于抽样数据）
         total = len(issues)
         category_ratios = {k: round(v / total * 100, 1) if total > 0 else 0 for k, v in categories.items()}
         
@@ -561,7 +679,10 @@ class DataService:
         
         return {
             'month': month,
-            'total': total,
+            'total': total,  # 抽样总数
+            'total_sampled': total_sampled,  # 明确标识为抽样数量
+            'is_sampled': True,  # 标识这是抽样数据
+            'sampling_note': f'基于 {total_sampled} 个抽样 Issue 的统计分析，不代表全部 Issue',
             'categories': categories,
             'categoryRatios': category_ratios,
             'keywords': keywords[:20],
@@ -569,7 +690,7 @@ class DataService:
             'issues': [{
                 'title': i.get('title', ''),
                 'type': i.get('type', '')
-            } for i in issues[:50]]
+            } for i in issues[:50]]  # 只返回前50个作为示例
         }
     
     def _extract_keywords(self, text):
@@ -820,6 +941,17 @@ class DataService:
                 'releases': sum(1 for d in text_data if d.get('type') == 'release')
             }
         
+        # 加载项目摘要（包含 AI 摘要）
+        if actual_key in self.loaded_project_summary:
+            summary_data = self.loaded_project_summary[actual_key]
+            summary['projectSummary'] = {
+                'aiSummary': summary_data.get('ai_summary', ''),
+                'issueStats': summary_data.get('issue_stats', {}),
+                'dataRange': summary_data.get('data_range', {})
+            }
+        else:
+            summary['projectSummary'] = None
+        
         return summary
     
     def get_demo_data(self):
@@ -884,17 +1016,114 @@ class DataService:
                 # 回退到从文本数据计算
                 issues_data = self.get_aligned_issues(repo_key)
                 result['issueCategories'] = [
+                {
+                    'month': month,
+                    'total': data.get('total', 0),
+                    'categories': data.get('categories', {})
+                }
+                for month, data in issues_data.get('monthlyData', {}).items()
+            ]
+            result['monthlyKeywords'] = {
+                month: data.get('keywords', [])
+                for month, data in issues_data.get('monthlyData', {}).items()
+            }
+        except Exception as e:
+            result['issueCategories'] = []
+            result['monthlyKeywords'] = {}
+        
+        # 获取波动分析
+        try:
+            waves_data = self.analyze_waves(repo_key)
+            result['waves'] = waves_data.get('waves', [])
+        except Exception as e:
+            result['waves'] = []
+        
+        # 获取项目 AI 摘要
+        if actual_key in self.loaded_project_summary:
+            summary_data = self.loaded_project_summary[actual_key]
+            result['projectSummary'] = {
+                'aiSummary': summary_data.get('ai_summary', ''),
+                'issueStats': summary_data.get('issue_stats', {}),
+                'dataRange': summary_data.get('data_range', {})
+            }
+        else:
+            result['projectSummary'] = None
+        
+        return result
+    
+    def get_demo_data(self):
+        """获取演示数据 - 优先使用真实数据"""
+        repos = self.get_loaded_repos()
+        
+        if repos:
+            # 使用第一个已加载的真实仓库
+            repo_key = repos[0]
+            return self._get_real_repo_data(repo_key)
+        else:
+            # 没有真实数据，返回错误提示
+            return {
+                'error': '没有找到真实数据。请将处理后的数据放入 Data 目录。',
+                'dataDir': DATA_DIR
+            }
+    
+    def _get_real_repo_data(self, repo_key):
+        """获取真实仓库的数据"""
+        result = {
+            'repoKey': repo_key,
+            'repoInfo': {
+                'name': repo_key.split('/')[-1] if '/' in repo_key else repo_key,
+                'description': f'{repo_key} 的真实数据',
+                'language': 'Unknown'
+            }
+        }
+        
+        # 获取分组时序数据
+        try:
+            result['groupedTimeseries'] = self.get_grouped_timeseries(repo_key)
+        except Exception as e:
+            result['groupedTimeseries'] = {'error': str(e)}
+        
+        # 获取 Issue 分析数据（优先使用预计算的分类数据）
+        actual_key = self._normalize_repo_key(repo_key)
+        try:
+            if actual_key in self.loaded_issue_classification:
+                # 使用预计算的 Issue 分类数据
+                classification_data = self.loaded_issue_classification[actual_key]
+                by_month = classification_data.get('by_month', {})
+                labels = classification_data.get('labels', {
+                    'feature': '功能需求', 'bug': 'Bug修复', 
+                    'question': '社区咨询', 'other': '其他'
+                })
+                
+                result['issueCategories'] = [
                     {
                         'month': month,
                         'total': data.get('total', 0),
-                        'categories': data.get('categories', {})
+                        'categories': {
+                            labels.get('feature', '功能需求'): data.get('feature', 0),
+                            labels.get('bug', 'Bug修复'): data.get('bug', 0),
+                            labels.get('question', '社区咨询'): data.get('question', 0),
+                            labels.get('other', '其他'): data.get('other', 0)
+                        }
                     }
-                    for month, data in issues_data.get('monthlyData', {}).items()
+                    for month, data in sorted(by_month.items())
                 ]
-                result['monthlyKeywords'] = {
-                    month: data.get('keywords', [])
-                    for month, data in issues_data.get('monthlyData', {}).items()
+                result['monthlyKeywords'] = {}  # 预计算数据中没有关键词
+            else:
+                # 回退到从文本数据计算
+                issues_data = self.get_aligned_issues(repo_key)
+                result['issueCategories'] = [
+                {
+                    'month': month,
+                    'total': data.get('total', 0),
+                    'categories': data.get('categories', {})
                 }
+                for month, data in issues_data.get('monthlyData', {}).items()
+            ]
+            result['monthlyKeywords'] = {
+                month: data.get('keywords', [])
+                for month, data in issues_data.get('monthlyData', {}).items()
+            }
         except Exception as e:
             result['issueCategories'] = []
             result['monthlyKeywords'] = {}

@@ -29,7 +29,7 @@ export default function Header({ repoName, onBackToHome }: HeaderProps) {
             </div>
             <div>
               <h1 className="text-2xl font-display font-bold gradient-text group-hover:opacity-80 transition-opacity">
-                DataPulse
+                OpenVista
               </h1>
               <p className="text-xs text-cyber-muted font-chinese">
                 GitHub 仓库生态画像分析平台

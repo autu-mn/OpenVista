@@ -69,10 +69,40 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 50, enable
     monthly_crawler = MonthlyCrawler()
     months = monthly_crawler.generate_month_list(owner, repo)
     
-    # 注意：已移除6个效率指标的GitHub API补充逻辑（Issue响应时间、Issue解决时长、Issue存活时间、PR响应时间、PR处理时长、PR存活时间）
-    # 这些指标如果OpenDigger没有数据，将直接用0填充（用于模型训练）
+    # ========== 使用 GitHub API 补齐缺失的指标 ==========
+    # 需要补齐的指标: 新增Issue, 关闭Issue, 贡献者, 新增贡献者
+    metrics_to_fill = ['新增Issue', '关闭Issue', '贡献者', '新增贡献者']
+    need_fill = [m for m in metrics_to_fill if m in missing_metrics]
     
-    print(f"  ✓ 指标数据准备完成（OpenDigger: {len(opendigger_data)} 个）")
+    if need_fill:
+        print(f"  → 使用 GitHub API 补齐缺失指标: {', '.join(need_fill)}")
+        try:
+            from backend.DataProcessor.github_api_metrics import GitHubAPIMetrics
+            github_api = GitHubAPIMetrics()
+            
+            # 补齐 Issue 相关指标
+            if '新增Issue' in need_fill or '关闭Issue' in need_fill:
+                issues_monthly = github_api.get_monthly_issues_count(owner, repo)
+                if '新增Issue' in need_fill and issues_monthly.get('issues_new'):
+                    opendigger_data['新增Issue'] = issues_monthly['issues_new']
+                    print(f"    ✓ 已补齐 新增Issue ({len(issues_monthly['issues_new'])} 个月)")
+                if '关闭Issue' in need_fill and issues_monthly.get('issues_closed'):
+                    opendigger_data['关闭Issue'] = issues_monthly['issues_closed']
+                    print(f"    ✓ 已补齐 关闭Issue ({len(issues_monthly['issues_closed'])} 个月)")
+            
+            # 补齐贡献者相关指标
+            if '贡献者' in need_fill or '新增贡献者' in need_fill:
+                contributors_monthly = github_api.get_monthly_contributors(owner, repo)
+                if '贡献者' in need_fill and contributors_monthly.get('contributors'):
+                    opendigger_data['贡献者'] = contributors_monthly['contributors']
+                    print(f"    ✓ 已补齐 贡献者 ({len(contributors_monthly['contributors'])} 个月)")
+                if '新增贡献者' in need_fill and contributors_monthly.get('new_contributors'):
+                    opendigger_data['新增贡献者'] = contributors_monthly['new_contributors']
+                    print(f"    ✓ 已补齐 新增贡献者 ({len(contributors_monthly['new_contributors'])} 个月)")
+        except Exception as e:
+            print(f"  ⚠ GitHub API 补齐失败: {str(e)}")
+    
+    print(f"  ✓ 指标数据准备完成（共 {len(opendigger_data)} 个指标）")
     
     # ========== 步骤2: 爬取描述文本（预处理后，上传到知识库）==========
     static_docs = {}
