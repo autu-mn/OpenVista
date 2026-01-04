@@ -153,7 +153,8 @@
     "syncthing/syncthing",
     "doocs/advanced-java",
     "fighting41love/funNLP",
-    "anuraghazra/github-readme-stats"
+    "anuraghazra/github-readme-stats",
+    "tensorflow/models"
   ],
   "failed": [
     "remix-run/remix",
@@ -188,8 +189,8 @@
     "ByteByteGoHq/system-design-101",
     "punkpeye/awesome-mcp-servers"
   ],
-  "samples_count": 1457,
-  "last_index": 185,
+  "samples_count": 1467,
+  "last_index": 186,
   "started_at": "2026-01-03T20:42:52.580304",
-  "updated_at": "2026-01-04T10:04:13.746567"
+  "updated_at": "2026-01-04T10:09:07.022197"
 }
