@@ -88,6 +88,14 @@ export default function HomePage({ onProjectReady }: HomePageProps) {
           
           if (data.type === 'start') {
             setProgress({ step: 0, stepName: '开始', message: data.message, progress: 0 })
+          } else if (data.type === 'exists') {
+            // 数据已存在，直接使用
+            setProgress({ step: 0, stepName: '数据已存在', message: data.message, progress: 100 })
+            setLoading(false)
+            eventSource.close()
+            setTimeout(() => {
+              onProjectReady(data.projectName || `${owner.trim()}_${repo.trim()}`)
+            }, 500)
           } else if (data.type === 'metrics_ready') {
             setProgress({ step: data.step || 1, stepName: '指标数据就绪', message: data.message, progress: data.progress || 20 })
             setTimeout(() => {
@@ -99,7 +107,9 @@ export default function HomePage({ onProjectReady }: HomePageProps) {
             setProgress({ step: 9, stepName: '完成', message: data.message, progress: 100 })
             setLoading(false)
             eventSource.close()
-            if (!data.projectName) {
+            if (data.projectName) {
+              setTimeout(() => onProjectReady(data.projectName), 500)
+            } else {
               const projectName = `${owner.trim()}_${repo.trim()}`
               setTimeout(() => onProjectReady(projectName), 500)
             }

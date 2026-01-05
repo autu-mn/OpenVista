@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -25,7 +25,16 @@ const GROUP_ICONS: Record<string, string> = {
 }
 
 export default function GroupedTimeSeriesChart({ data, onMonthClick, repoKey }: GroupedTimeSeriesChartProps) {
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['popularity', 'development']))
+  // 初始化时展开所有分组
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  
+  // 当数据加载后，自动展开所有分组
+  useEffect(() => {
+    if (data?.groups && Object.keys(data.groups).length > 0) {
+      const allGroupKeys = Object.keys(data.groups)
+      setExpandedGroups(new Set(allGroupKeys))
+    }
+  }, [data?.groups])
   const [hiddenMetrics, setHiddenMetrics] = useState<Set<string>>(new Set())
   const [focusedGroup, setFocusedGroup] = useState<string | null>(null)
   const [predictionMetric, setPredictionMetric] = useState<{groupKey: string, metricKey: string, metricName: string} | null>(null)
@@ -263,7 +272,7 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick, repoKey }: 
                         tickFormatter={(value) => {
                           if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`
                           if (value >= 1000) return `${(value / 1000).toFixed(1)}k`
-                          return Math.round(value)
+                          return String(Math.round(value))
                         }}
                       />
                       

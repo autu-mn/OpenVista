@@ -12,24 +12,88 @@ import RepoHeader from './components/RepoHeader'
 import type { DemoData, GroupedTimeSeriesData, IssueData } from './types'
 
 function App() {
+  // 初始化时从 localStorage 恢复项目信息
+  const [currentProject, setCurrentProject] = useState<string>(() => {
+    const saved = localStorage.getItem('currentProject')
+    return saved || ''
+  })
+  const [showHomePage, setShowHomePage] = useState<boolean>(() => {
+    // 如果有保存的项目，初始状态就不显示首页
+    return !localStorage.getItem('currentProject')
+  })
+  
   const [data, setData] = useState<DemoData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selectedMonth, setSelectedMonth] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'timeseries' | 'issues' | 'analysis'>('timeseries')
-  const [currentProject, setCurrentProject] = useState<string>('')
-  const [showHomePage, setShowHomePage] = useState(true)
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(() => {
+    const saved = localStorage.getItem('selectedMonth')
+    return saved || null
+  })
+  const [activeTab, setActiveTab] = useState<'timeseries' | 'issues' | 'analysis'>(() => {
+    const saved = localStorage.getItem('activeTab') as 'timeseries' | 'issues' | 'analysis' | null
+    return saved || 'timeseries'
+  })
   const [repoInfo, setRepoInfo] = useState<any>(null)
   const [summaryExpanded, setSummaryExpanded] = useState(false)
   const [needsTextCrawl, setNeedsTextCrawl] = useState(false)
   const [crawlingText, setCrawlingText] = useState(false)
+  const [isInitialized, setIsInitialized] = useState(false)
+
+  // 页面加载时，如果有保存的项目，恢复并加载数据
+  useEffect(() => {
+    const savedProject = localStorage.getItem('currentProject')
+    if (savedProject && !isInitialized) {
+      console.log('[页面恢复] 从 localStorage 恢复项目:', savedProject)
+      // 恢复标签页和月份
+      const savedTab = localStorage.getItem('activeTab') as 'timeseries' | 'issues' | 'analysis' | null
+      const savedMonth = localStorage.getItem('selectedMonth')
+      if (savedTab) {
+        setActiveTab(savedTab)
+      }
+      if (savedMonth) {
+        setSelectedMonth(savedMonth)
+      }
+      setCurrentProject(savedProject)
+      setShowHomePage(false)
+      setIsInitialized(true)
+      // 延迟加载数据，确保组件已完全初始化
+      setTimeout(() => {
+        fetchDataForProject(savedProject)
+      }, 100)
+    } else if (!savedProject) {
+      setIsInitialized(true)
+    }
+  }, [isInitialized])
+
+  // 保存当前项目到 localStorage
+  useEffect(() => {
+    if (currentProject) {
+      localStorage.setItem('currentProject', currentProject)
+    } else {
+      localStorage.removeItem('currentProject')
+    }
+  }, [currentProject])
+
+  // 保存当前标签页到 localStorage
+  useEffect(() => {
+    localStorage.setItem('activeTab', activeTab)
+  }, [activeTab])
+
+  // 保存选中的月份到 localStorage
+  useEffect(() => {
+    if (selectedMonth) {
+      localStorage.setItem('selectedMonth', selectedMonth)
+    } else {
+      localStorage.removeItem('selectedMonth')
+    }
+  }, [selectedMonth])
 
   useEffect(() => {
-    // 如果已经有项目且不在首页，加载数据
-    if (currentProject && !showHomePage) {
+    // 如果已经有项目且不在首页，加载数据（用于手动切换项目时）
+    if (currentProject && !showHomePage && isInitialized) {
       fetchData()
     }
-  }, [currentProject, showHomePage])
+  }, [currentProject, showHomePage, isInitialized])
 
   const handleProjectSelect = (projectName: string) => {
     setCurrentProject(projectName)
@@ -157,11 +221,34 @@ function App() {
   const handleCrawlText = async () => {
     if (!currentProject || crawlingText) return
     
+    // 先检查是否正在爬取
+    try {
+      const statusResp = await fetch(`/api/check_crawling_status?project_name=${encodeURIComponent(currentProject)}`)
+      const statusData = await statusResp.json()
+      
+      if (statusData.is_crawling) {
+        console.log('[补爬] 项目正在爬取中，跳过')
+        setCrawlingText(true)
+        return
+      }
+    } catch (e) {
+      console.warn('检查爬取状态失败:', e)
+    }
+    
     setCrawlingText(true)
     try {
       const response = await fetch(`/api/project/${encodeURIComponent(currentProject)}/crawl_text`, {
         method: 'POST'
       })
+      
+      if (response.status === 409) {
+        // 409 Conflict - 正在爬取中
+        const result = await response.json()
+        console.log('[补爬]', result.error || '项目正在爬取中')
+        setCrawlingText(true)
+        return
+      }
+      
       const result = await response.json()
       
       if (result.success) {
@@ -266,9 +353,14 @@ function App() {
   const stats = getStats()
   const latestMonth = stats.stars.month || stats.commits.month || ''
 
-  // 显示首页
-  if (showHomePage) {
+  // 显示首页（只有在没有项目且已初始化时才显示）
+  if (showHomePage && isInitialized) {
     return <HomePage onProjectReady={handleProjectReady} />
+  }
+  
+  // 如果正在初始化且有项目，显示加载状态
+  if (!isInitialized && currentProject) {
+    return <LoadingScreen />
   }
 
   if (loading) {
