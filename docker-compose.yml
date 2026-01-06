@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # 后端服务
+  backend:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+    container_name: openvista-backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend/DataProcessor/data:/app/DataProcessor/data
+      - ./backend/logs:/app/logs
+      - model_cache:/root/.cache/huggingface
+      # 如果 GitPulse 目录在项目根目录，挂载它（包含预测代码）
+      - ./GitPulse:/app/GitPulse:ro
+    working_dir: /app
+    environment:
+      - FLASK_ENV=production
+      - USE_HUGGINGFACE=true
+      - HUGGINGFACE_MODEL_ID=Osacato/Gitpulse
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - MAXKB_AI_API=${MAXKB_AI_API:-}
+      - MAXKB_API_KEY=${MAXKB_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+    restart: unless-stopped
+    depends_on:
+      - maxkb
+    networks:
+      - openvista-network
+
+  # 前端服务
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: openvista-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - openvista-network
+
+  # MaxKB 服务
+  maxkb:
+    image: registry.fit2cloud.com/maxkb/maxkb:latest
+    container_name: openvista-maxkb
+    ports:
+      - "8080:8080"
+    volumes:
+      - maxkb_data:/opt/maxkb/model
+      - maxkb_postgres:/var/lib/postgresql/data
+    environment:
+      - DB_HOST=localhost
+      - DB_PORT=5432
+      - DB_USER=root
+      - DB_PASSWORD=MaxKB@123456
+      - DB_NAME=maxkb
+    restart: unless-stopped
+    networks:
+      - openvista-network
+
+volumes:
+  maxkb_data:
+  maxkb_postgres:
+  model_cache:
+
+networks:
+  openvista-network:
+    driver: bridge
+

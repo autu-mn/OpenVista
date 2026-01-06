@@ -1,0 +1,20 @@
+name: openvista
+services:
+  maxkb:
+    image: registry.fit2cloud.com/maxkb/maxkb:latest
+    container_name: openvista-maxkb
+    ports:
+      - "8080:8080"
+    volumes:
+      - maxkb_data:/opt/maxkb/model
+      - maxkb_postgres:/var/lib/postgresql/data
+    environment:
+      - DB_HOST=localhost
+      - DB_PORT=5432
+      - DB_USER=root
+      - DB_PASSWORD=MaxKB@123456
+      - DB_NAME=maxkb
+    restart: unless-stopped
+volumes:
+  maxkb_data:
+  maxkb_postgres:
