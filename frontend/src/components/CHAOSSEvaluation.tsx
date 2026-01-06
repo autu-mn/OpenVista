@@ -15,11 +15,14 @@ interface MonthlyScore {
 interface FinalScores {
   overall_score: number
   overall_level: string
+  _raw_overall_score?: number  // 原始分数（用于研究和解释）
+  _percentile?: number  // 百分位排名（0-100）
   dimensions: Record<string, {
     score: number
     level: string
     monthly_count: number
     outliers_removed: number
+    quality?: number  // 数据质量得分
   }>
 }
 
@@ -30,6 +33,8 @@ interface CHAOSSData {
     end: string
     total_months: number
     evaluated_months: number
+    valid_months?: number  // 实际有评分的月份数
+    repo_created_month?: string  // 仓库创建月份
   }
   monthly_scores: MonthlyScore[]
   final_scores: FinalScores
@@ -179,6 +184,12 @@ export default function CHAOSSEvaluation({ repoKey }: CHAOSSEvaluationProps) {
               {final_scores.overall_score.toFixed(1)}
             </div>
             <div className="text-sm text-cyber-muted mt-1 font-chinese">{final_scores.overall_level}</div>
+            {/* 显示百分位排名 */}
+            {final_scores._percentile !== undefined && final_scores._percentile !== null && (
+              <div className="text-xs text-cyber-muted mt-2 pt-2 border-t border-cyber-border/50 font-chinese">
+                排名前 {final_scores._percentile.toFixed(1)}%
+              </div>
+            )}
           </div>
           
           <div className="bg-cyber-surface/50 border border-cyber-border rounded-xl p-4">
@@ -187,6 +198,11 @@ export default function CHAOSSEvaluation({ repoKey }: CHAOSSEvaluationProps) {
               {time_range.evaluated_months}
             </div>
             <div className="text-sm text-cyber-muted mt-1 font-chinese">共 {time_range.total_months} 个月数据</div>
+            {time_range.valid_months !== undefined && (
+              <div className="text-xs text-cyber-muted mt-1 font-chinese">
+                有效评分: {time_range.valid_months} 个月
+              </div>
+            )}
           </div>
           
           <div className="bg-cyber-surface/50 border border-cyber-border rounded-xl p-4">
@@ -194,6 +210,11 @@ export default function CHAOSSEvaluation({ repoKey }: CHAOSSEvaluationProps) {
             <div className="text-lg font-semibold text-cyber-text">
               {time_range.start} ~ {time_range.end}
             </div>
+            {time_range.repo_created_month && (
+              <div className="text-xs text-cyber-muted mt-1 font-chinese">
+                创建于: {time_range.repo_created_month}
+              </div>
+            )}
           </div>
         </div>
 
@@ -235,6 +256,11 @@ export default function CHAOSSEvaluation({ repoKey }: CHAOSSEvaluationProps) {
               <div className="text-sm text-cyber-muted space-y-1 font-chinese">
                 <div>等级: {dimData.level}</div>
                 <div>基于 {dimData.monthly_count} 个月的数据</div>
+                {dimData.quality !== undefined && (
+                  <div className="text-cyber-primary/70">
+                    数据质量: {(dimData.quality * 100).toFixed(0)}%
+                  </div>
+                )}
                 {dimData.outliers_removed > 0 && (
                   <div className="text-orange-400">
                     已去除 {dimData.outliers_removed} 个异常值
