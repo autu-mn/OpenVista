@@ -105,8 +105,8 @@ class GitHubAPIMetrics:
                         error_data = response.json()
                         if 'message' in error_data:
                             print(f"    错误信息: {error_data['message']}")
-                        except:
-                            pass
+                    except:
+                        pass
                     return None
             except Exception as e:
                 if attempt < 2:

@@ -490,12 +490,16 @@ class DataService:
                 by_month = issue_classification.get('by_month', {})
                 print(f"  [OK] 已从月度数据生成Issue分类: {len(by_month)} 个月份")
         
-        # 加载项目 AI 摘要
-        project_summary_file = os.path.join(folder_path, 'project_summary.json')
+        # 加载项目 AI 摘要（可能在 timeseries_for_model 目录下或根目录）
+        project_summary_file = os.path.join(folder_path, 'timeseries_for_model', 'project_summary.json')
+        if not os.path.exists(project_summary_file):
+            project_summary_file = os.path.join(folder_path, 'project_summary.json')
+        
         if os.path.exists(project_summary_file):
             try:
                 with open(project_summary_file, 'r', encoding='utf-8') as f:
                     self.loaded_project_summary[repo_key] = json.load(f)
+                    print(f"  [OK] 已加载项目 AI 摘要: {repo_key}")
             except Exception as e:
                 print(f"加载项目摘要失败 {repo_key}: {e}")
     
@@ -1309,7 +1313,8 @@ class DataService:
             summary['projectSummary'] = {
                 'aiSummary': summary_data.get('ai_summary', ''),
                 'issueStats': summary_data.get('issue_stats', {}),
-                'dataRange': summary_data.get('data_range', {})
+                'dataRange': summary_data.get('date_range', summary_data.get('data_range', {})),
+                'total_months': summary_data.get('total_months', 0)
             }
         else:
             summary['projectSummary'] = None
@@ -1406,7 +1411,8 @@ class DataService:
             result['projectSummary'] = {
                 'aiSummary': summary_data.get('ai_summary', ''),
                 'issueStats': summary_data.get('issue_stats', {}),
-                'dataRange': summary_data.get('data_range', {})
+                'dataRange': summary_data.get('date_range', summary_data.get('data_range', {})),
+                'total_months': summary_data.get('total_months', 0)
             }
         else:
             result['projectSummary'] = None
@@ -1503,7 +1509,8 @@ class DataService:
             result['projectSummary'] = {
                 'aiSummary': summary_data.get('ai_summary', ''),
                 'issueStats': summary_data.get('issue_stats', {}),
-                'dataRange': summary_data.get('data_range', {})
+                'dataRange': summary_data.get('date_range', summary_data.get('data_range', {})),
+                'total_months': summary_data.get('total_months', 0)
             }
         else:
             result['projectSummary'] = None

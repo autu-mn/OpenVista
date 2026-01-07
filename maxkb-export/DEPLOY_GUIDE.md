@@ -1,103 +1,154 @@
-# MaxKB 部署指南
+# OpenVista MaxKB 部署指南
 
-本指南帮助你导出并分享你的 MaxKB AI 助手配置。
+## ⚠️ 重要警告
 
----
+**Windows 用户注意**：请务必使用脚本导出数据库，**不要**使用 PowerShell 的 `>` 重定向！
 
-## 📤 第一步：导出数据库
+```powershell
+# ❌ 错误 - 会破坏二进制文件
+docker exec ... pg_dump ... > file.dump
 
-在你的电脑上运行（确保你的 MaxKB 容器正在运行）：
-
-```bash
-# 查看容器名称
-docker ps | grep maxkb
-
-# 导出数据库（替换 maxkb 为你的容器名）
-docker exec maxkb pg_dump -U root -d maxkb -Fc > maxkb-export/db/maxkb_full.dump
-
-# 确认文件大小（应该有几十MB）
-ls -lh maxkb-export/db/maxkb_full.dump
+# ✅ 正确 - 使用脚本
+.\maxkb-export\export.ps1
 ```
 
-**导出的内容包括：**
-- ✅ 所有知识库和文档内容
-- ✅ 所有向量数据（Embedding）
-- ✅ Agent/应用配置和提示词
-- ✅ 模型配置（不含 API Key）
-
 ---
 
-## 📁 第二步：确认文件结构
-
-确保目录结构如下：
+## 文件结构
 
 ```
 maxkb-export/
 ├── db/
-│   └── maxkb_full.dump    ← 你导出的数据库
-├── install.sh             ← Linux/Mac 安装脚本
-├── install.ps1            ← Windows 安装脚本
-├── README.md              ← 使用说明
-└── DEPLOY_GUIDE.md        ← 本文件
+│   └── maxkb_full.dump      # PostgreSQL 备份（包含所有数据）
+├── export.ps1               # Windows 导出脚本
+├── export.sh                # Linux/Mac 导出脚本
+├── install.ps1              # Windows 安装脚本
+├── install.sh               # Linux/Mac 安装脚本
+└── DEPLOY_GUIDE.md          # 本文档
 ```
 
 ---
 
-## 📦 第三步：上传到 GitHub
+## 一、导出数据（在配置好的机器上）
+
+### Windows
+
+```powershell
+cd D:\Pycharm\PycharmProject\cvProject\DataPulse
+.\maxkb-export\export.ps1
+```
+
+### Linux/Mac
 
 ```bash
-git add maxkb-export/
-git commit -m "添加 MaxKB 部署包"
-git push
+cd /path/to/DataPulse
+chmod +x maxkb-export/export.sh
+./maxkb-export/export.sh
 ```
 
-> ⚠️ 注意：`maxkb_full.dump` 文件较大（约30-100MB），确保 Git LFS 已配置或仓库支持大文件。
+**导出内容包含**：
+- ✅ 知识库及所有文档
+- ✅ 模型配置（含 API_KEY）
+- ✅ Agent 配置
+- ✅ 工具配置
+- ✅ 用户账户及权限
+- ✅ 所有系统设置
 
 ---
 
-## 📖 第四步：告诉使用者
-
-在项目 README 中添加以下说明：
-
-```markdown
-## 🤖 AI 助手部署
+## 二、安装部署（在新机器上）
 
 ### 前提条件
-- Docker Desktop 已安装并运行
-- DeepSeek API Key（获取：https://platform.deepseek.com/）
 
-### 安装步骤
+1. 已安装 Docker Desktop 并运行
+2. 已获取完整的 `maxkb-export` 文件夹
 
-**Linux/Mac:**
-```bash
-cd maxkb-export
-chmod +x install.sh
-./install.sh
-```
+### Windows
 
-**Windows PowerShell:**
 ```powershell
-cd maxkb-export
-.\install.ps1
+.\maxkb-export\install.ps1
 ```
 
-### 配置 API Key
-1. 打开 http://localhost:8080
-2. 登录：`admin` / `MaxKB@123456`
-3. 进入「系统设置」→「模型管理」
-4. 编辑「OpenRank-1」模型，填入 DeepSeek API Key
-5. 保存后即可使用
+### Linux/Mac
+
+```bash
+chmod +x maxkb-export/install.sh
+./maxkb-export/install.sh
+```
+
+### 安装完成后
+
+- 访问地址：http://localhost:8080
+- 默认用户名：`admin`
+- 默认密码：`MaxKB@123456`
+
+> **注意**：如果备份中包含用户数据，请使用备份中的账户登录。
+
+---
+
+## 三、手动操作（高级）
+
+### 手动导出数据库
+
+```bash
+# 1. 在容器内执行导出
+docker exec openvista-maxkb pg_dump -U root -d maxkb --no-owner --no-acl -Fc -f /tmp/backup.dump
+
+# 2. 复制到本地
+docker cp openvista-maxkb:/tmp/backup.dump ./maxkb-export/db/maxkb_full.dump
+
+# 3. 清理容器内临时文件
+docker exec openvista-maxkb rm -f /tmp/backup.dump
+```
+
+### 手动恢复数据库
+
+```bash
+# 1. 复制备份到容器
+docker cp ./maxkb-export/db/maxkb_full.dump openvista-maxkb:/tmp/backup.dump
+
+# 2. 恢复数据库
+docker exec openvista-maxkb pg_restore -U root -d maxkb --clean --if-exists --no-owner /tmp/backup.dump
+
+# 3. 重启服务
+docker restart openvista-maxkb
 ```
 
 ---
 
-## ❓ 常见问题
+## 四、故障排除
 
-**Q: 安装后登录不了？**
-A: 密码统一重置为 `MaxKB@123456`
+### 问题：pg_restore 报错 "not a valid archive"
 
-**Q: AI 不回复？**
-A: 请确认已在「模型管理」中配置了有效的 DeepSeek API Key
+**原因**：备份文件被 PowerShell 以 UTF-16 编码保存，破坏了二进制格式。
 
-**Q: 端口 8080 被占用？**
-A: 修改 `docker-compose.yml` 中的端口映射，如改为 `"8081:8080"`
+**解决**：使用 `export.ps1` 脚本重新导出。
+
+### 问题：恢复后数据为空
+
+**原因**：pg_restore 命令失败但错误被忽略。
+
+**解决**：手动执行恢复命令查看错误信息：
+```bash
+docker exec openvista-maxkb pg_restore -U root -d maxkb --clean --if-exists --no-owner /tmp/backup.dump
+```
+
+### 问题：需要重新注册
+
+**原因**：用户表未正确恢复。
+
+**解决**：确保备份文件包含完整数据（大小应 > 10MB）。
+
+---
+
+## 五、备份策略建议
+
+1. **定期导出**：每次修改模型/知识库配置后执行导出
+2. **保留多版本**：保留最近 3 个备份版本
+3. **验证备份**：导出后检查文件大小是否正常
+
+```powershell
+# 推荐：带时间戳的备份
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+Copy-Item ".\maxkb-export\db\maxkb_full.dump" ".\maxkb-export\db\maxkb_$timestamp.dump"
+```

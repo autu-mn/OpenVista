@@ -167,8 +167,10 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 50, enable
     labels = text_crawler.get_labels(owner, repo)
     if repo_info_basic:
         print(f"  ✓ 获取了仓库信息: {repo_info_basic.get('name', '')}")
-        print(f"    - 描述: {repo_info_basic.get('description', '无')[:50]}...")
-        print(f"    - 主题: {', '.join(repo_info_basic.get('topics', [])[:5])}")
+        description = repo_info_basic.get('description') or '无'
+        print(f"    - 描述: {description[:50]}...")
+        topics = repo_info_basic.get('topics') or []
+        print(f"    - 主题: {', '.join(topics[:5])}")
         print(f"    - 标签: {len(labels) if labels else 0} 个")
     else:
         print("  ⚠ 未能获取仓库信息")
@@ -193,7 +195,7 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 50, enable
     if need_fill:
         print(f"  → 使用 GitHub API 补齐缺失指标: {', '.join(need_fill)}")
         try:
-            from backend.DataProcessor.github_api_metrics import GitHubAPIMetrics
+            from DataProcessor.github_api_metrics import GitHubAPIMetrics
             github_api = GitHubAPIMetrics()
             
             # 补齐 Issue 相关指标

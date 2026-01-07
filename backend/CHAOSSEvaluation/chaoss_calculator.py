@@ -21,7 +21,6 @@ from .quality_utils import (
     calculate_percentile_reference,
     apply_quality_penalty
 )
-from .distribution_aligner import PercentileDistributionAligner
 
 
 class CHAOSSEvaluator:
@@ -36,13 +35,6 @@ class CHAOSSEvaluator:
         """
         self.data_service = data_service
         self.mapper = CHAOSSMapper()
-        
-        # 百分位分布对齐器：用于运行时缓存最近项目的原始分数
-        # 使用字典记录每个项目的最新分数，避免重复添加导致分布偏移
-        # 控制规模，防止无限增长（保留最近500个项目的分数）
-        self._repo_scores_cache = {}  # {repo_key: raw_score} 记录每个项目的最新分数
-        self._recent_raw_scores = []  # 用于分布对齐的分数列表
-        self._distribution_aligner = None
     
     def evaluate_repo(self, repo_key: str) -> Dict:
         """
@@ -384,80 +376,18 @@ class CHAOSSEvaluator:
                 'quality': round(avg_quality, 2)  # 新增：维度数据质量
             }
         
-        # 百分位分布映射：将原始分数映射到目标分布范围
-        # 保留原始分数用于算法判断和研究
+        # 计算最终原始分数（不进行分布映射，确保评分稳定）
+        # 移除分布对齐器，因为：
+        # 1. 本地项目数量有限，无法构建稳定的参考分布
+        # 2. 动态参考分布会导致评分不稳定
+        # 3. 原始分数已经能够反映项目的真实健康度
         raw_overall_score = round(final_overall, 1)
         
-        # 更新分布对齐器（使用运行时缓存）
-        # 修复：使用字典记录每个项目的最新分数，避免重复添加导致分布偏移
-        scores_changed = False
-        
-        # 检查该项目的分数是否已存在
-        if repo_key in self._repo_scores_cache:
-            # 如果已存在，更新分数（移除旧的，添加新的）
-            old_score = self._repo_scores_cache[repo_key]
-            if abs(old_score - raw_overall_score) > 0.01:  # 只有分数变化超过0.01才更新
-                # 找到并移除旧分数（使用索引避免移除错误的分数）
-                try:
-                    old_index = self._recent_raw_scores.index(old_score)
-                    self._recent_raw_scores.pop(old_index)
-                    scores_changed = True
-                except ValueError:
-                    # 如果找不到旧分数，说明可能已经被移除了，继续
-                    pass
-        else:
-            scores_changed = True
-        
-        # 更新缓存
-        self._repo_scores_cache[repo_key] = raw_overall_score
-        
-        # 添加新分数到列表
-        self._recent_raw_scores.append(raw_overall_score)
-        
-        # 控制缓存规模，防止无限增长
-        # 如果超过500个项目，移除最旧的项目（FIFO策略）
-        if len(self._repo_scores_cache) > 500:
-            # 使用字典的插入顺序（Python 3.7+），移除第一个（最旧的）项目
-            oldest_key = next(iter(self._repo_scores_cache))
-            old_score = self._repo_scores_cache.pop(oldest_key)
-            # 从分数列表中移除对应的分数（使用索引确保移除正确的）
-            try:
-                old_index = self._recent_raw_scores.index(old_score)
-                self._recent_raw_scores.pop(old_index)
-                scores_changed = True
-            except ValueError:
-                # 如果找不到，可能已经被移除了
-                pass
-        
-        # 只在分数列表变化时重新创建分布对齐器（性能优化）
-        if scores_changed and len(self._recent_raw_scores) >= 10:  # 至少需要10个参考项目
-            self._distribution_aligner = PercentileDistributionAligner(
-                self._recent_raw_scores.copy(),  # 使用副本避免引用问题
-                min_score=30.0,  # 最低30分
-                max_score=100.0  # 最高100分
-            )
-        elif self._distribution_aligner is None and len(self._recent_raw_scores) >= 10:
-            # 如果对齐器不存在但数据足够，创建它
-            self._distribution_aligner = PercentileDistributionAligner(
-                self._recent_raw_scores.copy(),
-                min_score=30.0,
-                max_score=100.0
-            )
-        
-        # 应用分布对齐（如果对齐器已准备好）
-        if self._distribution_aligner and self._distribution_aligner.is_ready():
-            aligned_score = self._distribution_aligner.align(raw_overall_score)
-            percentile = self._distribution_aligner.get_percentile(raw_overall_score)
-        else:
-            # 如果参考数据不足，使用原始分数
-            aligned_score = raw_overall_score
-            percentile = None
-        
         return {
-            'overall_score': aligned_score,  # 映射后的分数（用于展示）
-            'overall_level': self._get_score_level(aligned_score),
-            '_raw_overall_score': raw_overall_score,  # 原始分数（用于研究和解释）
-            '_percentile': percentile,  # 百分位排名（如果可用）
+            'overall_score': raw_overall_score,  # 直接使用原始分数，确保完全稳定
+            'overall_level': self._get_score_level(raw_overall_score),
+            '_raw_overall_score': raw_overall_score,  # 保留原始分数字段（向后兼容）
+            '_percentile': None,  # 不再计算百分位排名（需要大量参考项目，本地不适用）
             'dimensions': final_dimensions
         }
     
@@ -628,11 +558,8 @@ class CHAOSSEvaluator:
         if quality_analysis:
             recommendations.extend(quality_analysis)
         
-        # 6. 生成摘要（包含百分位信息）
-        summary_parts = [f'综合评分: {overall_score:.1f}分 ({final_scores.get("overall_level", "未知")})']
-        if percentile is not None:
-            summary_parts.append(f'排名前{percentile:.1f}%')
-        summary = ' · '.join(summary_parts)
+        # 6. 生成摘要（基于原始分数）
+        summary = f'综合评分: {overall_score:.1f}分 ({final_scores.get("overall_level", "未知")})'
         
         # 去重并限制数量
         unique_recommendations = []
@@ -703,55 +630,45 @@ class CHAOSSEvaluator:
         return recommendations
     
     def _generate_overall_recommendation(self, overall_score: float, percentile: Optional[float], trend_analysis: List[str]) -> Optional[str]:
-        """生成总体评价建议"""
+        """生成总体评价建议（基于原始分数，不依赖百分位排名）"""
         # 如果有趋势分析，结合趋势生成更具体的建议
         has_positive_trend = any('提升' in t or '上升' in t for t in trend_analysis)
         has_negative_trend = any('下降' in t for t in trend_analysis)
         
-        if percentile is not None:
-            if percentile >= 85:
-                if has_positive_trend:
-                    return f'项目排名前{percentile:.1f}%，属于顶级开源项目，且近期表现优异，建议继续保持并扩大影响力'
-                else:
-                    return f'项目排名前{percentile:.1f}%，属于顶级开源项目，建议在保持优势的同时关注潜在风险'
-            elif percentile >= 70:
-                if has_positive_trend:
-                    return f'项目排名前{percentile:.1f}%，健康度优秀且持续改善，建议继续优化薄弱环节'
-                else:
-                    return f'项目排名前{percentile:.1f}%，健康度优秀，建议关注近期变化趋势'
-            elif percentile >= 50:
-                if has_positive_trend:
-                    return f'项目排名前{percentile:.1f}%，处于中上水平且呈上升趋势，建议重点提升薄弱维度'
-                elif has_negative_trend:
-                    return f'项目排名前{percentile:.1f}%，处于中上水平但近期有所下降，建议分析原因并采取针对性措施'
-                else:
-                    return f'项目排名前{percentile:.1f}%，处于中上水平，建议重点关注薄弱维度以进一步提升'
-            elif percentile >= 30:
-                if has_positive_trend:
-                    return f'项目排名前{percentile:.1f}%，处于中等水平但呈上升趋势，建议持续改进以提升排名'
-                elif has_negative_trend:
-                    return f'项目排名前{percentile:.1f}%，处于中等水平且近期下降，需要系统性改进'
-                else:
-                    return f'项目排名前{percentile:.1f}%，处于中等水平，建议系统性改进薄弱环节'
-            elif percentile >= 15:
-                if has_positive_trend:
-                    return f'项目排名前{percentile:.1f}%，健康度偏低但呈改善趋势，建议加大改进力度'
-                else:
-                    return f'项目排名前{percentile:.1f}%，健康度偏低，需要系统性改进社区建设和代码质量'
+        # 完全基于原始分数生成建议，确保稳定性
+        if overall_score >= 80:
+            if has_positive_trend:
+                return '项目健康度优秀，且近期表现优异，建议继续保持并扩大影响力'
             else:
-                return f'项目排名前{percentile:.1f}%，健康度较低，建议加强社区建设、代码质量管控和项目推广'
+                return '项目健康度优秀，建议在保持优势的同时关注潜在风险'
+        elif overall_score >= 70:
+            if has_positive_trend:
+                return '项目健康度良好且持续改善，建议继续优化薄弱环节'
+            else:
+                return '项目健康度良好，建议关注近期变化趋势'
+        elif overall_score >= 60:
+            if has_positive_trend:
+                return '项目健康度中等偏上且呈上升趋势，建议重点提升薄弱维度'
+            elif has_negative_trend:
+                return '项目健康度中等偏上但近期有所下降，建议分析原因并采取针对性措施'
+            else:
+                return '项目健康度中等偏上，建议重点关注薄弱维度以进一步提升'
+        elif overall_score >= 50:
+            if has_positive_trend:
+                return '项目健康度中等但呈上升趋势，建议持续改进以提升评分'
+            elif has_negative_trend:
+                return '项目健康度中等且近期下降，需要系统性改进'
+            else:
+                return '项目健康度中等，建议系统性改进薄弱环节'
+        elif overall_score >= 40:
+            if has_positive_trend:
+                return '项目健康度中等偏下但呈改善趋势，建议加大改进力度'
+            else:
+                return '项目健康度中等偏下，需要系统性改进社区建设和代码质量'
+        elif overall_score >= 30:
+            return '项目健康度偏低，建议加强社区建设、代码质量管控和项目推广'
         else:
-            # 如果没有百分位信息，使用原始分数
-            if overall_score < 35:
-                return '项目整体健康度较低，建议加强社区建设和代码质量管控，提升项目活跃度'
-            elif overall_score < 50:
-                return '项目健康度中等偏下，有较大改进空间，建议持续优化并关注社区反馈'
-            elif overall_score < 65:
-                return '项目健康度中等，有改进空间，建议重点关注薄弱维度'
-            elif overall_score < 80:
-                return '项目健康度良好，建议在保持优势的同时继续优化'
-            else:
-                return '项目健康度优秀，建议继续保持并考虑扩大项目影响力'
+            return '项目健康度较低，建议全面改进社区建设、代码质量和项目活跃度'
     
     def _analyze_dimensions(self, dimensions: Dict, monthly_scores: List[Dict]) -> List[str]:
         """分析各维度，生成具体的维度建议"""

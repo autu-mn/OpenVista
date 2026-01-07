@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Award, TrendingUp, TrendingDown, Minus, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { Award, AlertCircle, CheckCircle2 } from 'lucide-react'
 
 interface MonthlyScore {
   month: string
@@ -116,17 +116,6 @@ export default function CHAOSSEvaluation({ repoKey }: CHAOSSEvaluationProps) {
     return 'bg-red-500'
   }
 
-  const getTrendIcon = (trend: string) => {
-    switch (trend) {
-      case '上升':
-        return <TrendingUp className="w-4 h-4 text-green-400" />
-      case '下降':
-        return <TrendingDown className="w-4 h-4 text-red-400" />
-      default:
-        return <Minus className="w-4 h-4 text-cyber-muted" />
-    }
-  }
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -166,7 +155,7 @@ export default function CHAOSSEvaluation({ repoKey }: CHAOSSEvaluationProps) {
     )
   }
 
-  const { final_scores, monthly_scores, report, time_range } = data
+  const { final_scores, monthly_scores, report, time_range } = data!
 
   return (
     <div className="space-y-6">

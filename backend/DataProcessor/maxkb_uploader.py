@@ -504,7 +504,10 @@ class MaxKBUploader:
                                         
                                         return True
                                     else:
-                                        print(f"[ERROR] 创建文档失败：code {result_code}, {create_result.get('message', '未知错误')}")
+                                        error_msg = create_result.get('message', '未知错误')
+                                        print(f"[ERROR] 创建文档失败：code {result_code}, {error_msg}")
+                                        if '模型不存在' in error_msg or result_code == 500:
+                                            print(f"[HINT] 请在 MaxKB 管理界面为知识库配置嵌入模型！")
                                         return False
                                 else:
                                     print(f"[ERROR] 创建文档响应格式错误")

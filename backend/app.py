@@ -58,20 +58,26 @@ def setup_logging():
 logger = setup_logging()
 
 # ==================== 初始化 GitPulse ====================
-predictor = None
+# 预测服务将在首次调用时延迟初始化
 GITPULSE_AVAILABLE = False
+_gitpulse_service = None
 
-try:
-    from GitPulse.predictor import GitPulsePredictor
-    predictor = GitPulsePredictor(enable_cache=True)
-    GITPULSE_AVAILABLE = True
-    logger.info("GitPulse 预测器初始化成功")
-except (ImportError, FileNotFoundError) as e:
-    logger.warning(f"GitPulse 初始化失败: {e}")
-    logger.warning("预测功能将不可用，其他功能正常运行")
-    logger.warning("如需预测功能，请确保:")
-    logger.warning("  1. 已安装依赖: pip install -r GitPulse/requirements_predict.txt")
-    logger.warning("  2. 模型文件存在: GitPulse/predict/models/best_model.pt")
+def get_gitpulse_service():
+    """获取 GitPulse 预测服务（延迟初始化）"""
+    global _gitpulse_service, GITPULSE_AVAILABLE
+    if _gitpulse_service is None:
+        try:
+            from GitPulse.prediction_service import get_prediction_service
+            _gitpulse_service = get_prediction_service()
+            GITPULSE_AVAILABLE = _gitpulse_service.is_available()
+            if GITPULSE_AVAILABLE:
+                logger.info("GitPulse 预测服务初始化成功")
+            else:
+                logger.warning(f"GitPulse 预测服务不可用: {_gitpulse_service.get_error()}")
+        except Exception as e:
+            logger.warning(f"GitPulse 初始化失败: {e}")
+            GITPULSE_AVAILABLE = False
+    return _gitpulse_service
 
 app = Flask(__name__)
 CORS(app)
@@ -99,7 +105,7 @@ qa_agent = QAAgent()
 # 预测解释器实例
 prediction_explainer = PredictionExplainer()
 
-# CHAOSS 评估器实例（使用增强版本）
+# CHAOSS 评估器实例
 chaoss_evaluator = CHAOSSEvaluator(data_service)
 
 
@@ -258,6 +264,119 @@ def get_issues_by_month(repo_key):
         return jsonify({'error': str(e)}), 500
 
 
+# 预测服务缓存
+_prediction_cache = {}
+
+@app.route('/api/forecast/<path:repo_key>', methods=['GET'])
+def get_forecast(repo_key):
+    """
+    获取预测数据
+    使用 GitPulse 模型从 timeseries_for_model 目录预测
+    """
+    global _prediction_cache
+    
+    try:
+        from GitPulse.prediction_service import get_prediction_service
+        
+        # 支持两种格式
+        if '_' in repo_key and '/' not in repo_key:
+            repo_key = repo_key.replace('_', '/')
+        
+        project_key = repo_key.replace('/', '_')
+        forecast_months = int(request.args.get('months', 12))
+        
+        # 检查缓存
+        cache_key = f"{project_key}_{forecast_months}"
+        if cache_key in _prediction_cache:
+            print(f"[CACHE] 使用缓存的预测结果: {cache_key}")
+            return jsonify(_prediction_cache[cache_key])
+        
+        # 查找 timeseries_for_model 目录
+        data_dir = os.path.join(os.path.dirname(__file__), 'DataProcessor', 'data', project_key)
+        if not os.path.exists(data_dir):
+            return jsonify({'error': f'项目 {repo_key} 不存在', 'available': False}), 404
+        
+        # 查找最新的 monthly_data 目录
+        monthly_dirs = [d for d in os.listdir(data_dir) if d.startswith('monthly_data_')]
+        if not monthly_dirs:
+            return jsonify({'error': '未找到月度数据', 'available': False}), 404
+        
+        latest_dir = sorted(monthly_dirs)[-1]
+        timeseries_dir = os.path.join(data_dir, latest_dir, 'timeseries_for_model')
+        
+        if not os.path.exists(timeseries_dir):
+            return jsonify({'error': '未找到时序数据', 'available': False}), 404
+        
+        # 获取预测服务
+        prediction_service = get_prediction_service()
+        
+        if not prediction_service.is_available():
+            return jsonify({
+                'error': prediction_service.get_error() or 'GitPulse 预测服务不可用',
+                'available': False,
+                'hint': '请安装依赖: pip install -r GitPulse/requirements.txt'
+            }), 503
+        
+        # 获取仓库信息
+        repo_info = None
+        if repo_key in data_service.loaded_text:
+            for doc in data_service.loaded_text[repo_key]:
+                if doc.get('type') == 'repo_info':
+                    try:
+                        repo_info = json.loads(doc.get('content', '{}'))
+                    except:
+                        pass
+                    break
+        
+        # 执行预测
+        result = prediction_service.predict(
+            timeseries_dir,
+            forecast_months=forecast_months,
+            repo_info=repo_info
+        )
+        
+        # 缓存结果
+        _prediction_cache[cache_key] = result
+        
+        return jsonify(result)
+        
+    except ImportError as e:
+        return jsonify({
+            'error': f'GitPulse 模块导入失败: {str(e)}',
+            'available': False,
+            'hint': '请安装依赖: pip install torch numpy transformers'
+        }), 503
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'available': False}), 500
+
+
+@app.route('/api/forecast/status', methods=['GET'])
+def get_forecast_status():
+    """检查预测服务状态"""
+    try:
+        from GitPulse.prediction_service import get_prediction_service
+        service = get_prediction_service()
+        
+        return jsonify({
+            'available': service.is_available(),
+            'error': service.get_error(),
+            'model': 'GitPulse (Transformer+Text)' if service.is_available() else None
+        })
+    except ImportError as e:
+        return jsonify({
+            'available': False,
+            'error': f'模块导入失败: {str(e)}',
+            'hint': '请安装依赖: pip install torch numpy transformers'
+        })
+    except Exception as e:
+        return jsonify({
+            'available': False,
+            'error': str(e)
+        })
+
+
 @app.route('/api/analysis/<path:repo_key>', methods=['GET'])
 def get_wave_analysis(repo_key):
     """
@@ -273,6 +392,82 @@ def get_wave_analysis(repo_key):
         return jsonify(analysis)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# Issue 分析缓存 - 避免重复调用 AI
+_issue_analysis_cache = {}
+
+@app.route('/api/issues/analyze/<path:repo_key>', methods=['GET'])
+def analyze_issues(repo_key):
+    """
+    使用 AI 分析项目 Issue，生成智能摘要
+    总结项目遇到的问题和解决办法
+    支持缓存，避免每次进入页面都重新分析
+    """
+    global _issue_analysis_cache
+    
+    try:
+        from Agent.issue_analyzer import IssueAnalyzer
+        
+        # 支持两种格式
+        if '_' in repo_key and '/' not in repo_key:
+            repo_key = repo_key.replace('_', '/')
+        
+        # 查找 raw_monthly_data.json 文件
+        actual_key = data_service._normalize_repo_key(repo_key)
+        project_key = actual_key.replace('/', '_')
+        
+        # 检查缓存 - 同一个项目不重复分析
+        if project_key in _issue_analysis_cache:
+            print(f"[CACHE] 使用缓存的 Issue 分析结果: {project_key}")
+            return jsonify(_issue_analysis_cache[project_key])
+        
+        data_dir = os.path.join(os.path.dirname(__file__), 'DataProcessor', 'data', project_key)
+        
+        raw_data_path = None
+        if os.path.exists(data_dir):
+            # 查找最新的 monthly_data 目录
+            monthly_dirs = [d for d in os.listdir(data_dir) if d.startswith('monthly_data_')]
+            if monthly_dirs:
+                latest_dir = sorted(monthly_dirs)[-1]
+                raw_data_path = os.path.join(data_dir, latest_dir, 'raw_monthly_data.json')
+        
+        if not raw_data_path or not os.path.exists(raw_data_path):
+            return jsonify({
+                'error': '未找到 Issue 数据文件',
+                'summary': '暂无数据',
+                'stats': {},
+                'ai_enabled': False
+            })
+        
+        # 创建分析器并分析
+        analyzer = IssueAnalyzer()
+        issues = analyzer.load_issues_from_raw_data(raw_data_path)
+        
+        if not issues:
+            return jsonify({
+                'summary': '暂无 Issue 数据',
+                'stats': {'total': 0},
+                'ai_enabled': False
+            })
+        
+        result = analyzer.analyze_issues(issues, actual_key)
+        
+        # 缓存结果
+        _issue_analysis_cache[project_key] = result
+        print(f"[CACHE] 已缓存 Issue 分析结果: {project_key}")
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': str(e),
+            'summary': f'分析失败: {str(e)}',
+            'stats': {},
+            'ai_enabled': False
+        }), 500
 
 
 @app.route('/api/keywords/<path:repo_key>/<month>', methods=['GET'])
@@ -325,9 +520,47 @@ def get_projects():
                     for f in os.listdir(item_path)
                 )
                 if has_processed:
-                    summary = qa_agent.get_project_summary(item)
-                    if summary and summary.get('exists'):
-                        projects.append(summary)
+                    # 构建简化的项目信息
+                    full_name = item.replace('_', '/', 1)
+                    
+                    # 检查 data_service 是否有加载该项目的数据
+                    has_timeseries = item in data_service.loaded_timeseries or full_name in data_service.loaded_timeseries
+                    has_text = item in data_service.loaded_text or full_name in data_service.loaded_text
+                    
+                    # 获取时间范围
+                    time_range = None
+                    key = full_name if full_name in data_service.loaded_timeseries else item
+                    if key in data_service.loaded_timeseries:
+                        try:
+                            ts_data = data_service.loaded_timeseries[key]
+                            if ts_data:
+                                first_metric = list(ts_data.values())[0]
+                                # 处理嵌套结构 {'raw': {month: value}} 或直接 {month: value}
+                                if isinstance(first_metric, dict):
+                                    if 'raw' in first_metric:
+                                        months = list(first_metric['raw'].keys())
+                                    else:
+                                        months = list(first_metric.keys())
+                                    # 过滤出有效的月份格式 YYYY-MM
+                                    valid_months = [m for m in months if isinstance(m, str) and len(m) == 7 and '-' in m]
+                                    if valid_months:
+                                        valid_months.sort()
+                                        time_range = {
+                                            'start': valid_months[0],
+                                            'end': valid_months[-1],
+                                            'months': len(valid_months)
+                                        }
+                        except Exception as e:
+                            print(f"获取时间范围失败 {item}: {e}")
+                    
+                    projects.append({
+                        'name': item,
+                        'full_name': full_name,
+                        'folder': item,
+                        'has_timeseries': has_timeseries,
+                        'has_text': has_text,
+                        'time_range': time_range
+                    })
         
         # 默认项目
         default_project = 'X-lab2017_open-digger'
@@ -337,6 +570,8 @@ def get_projects():
             'default': default_project
         })
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
@@ -1562,6 +1797,105 @@ def crawl_repository():
         return jsonify({'error': str(e)}), 500
 
 
+def ensure_maxkb_running():
+    """确保 MaxKB Docker 容器正在运行"""
+    import subprocess
+    import time
+    
+    container_name = "openvista-maxkb"
+    
+    try:
+        # 检查 Docker 是否可用
+        result = subprocess.run(
+            ["docker", "version"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode != 0:
+            print("[WARN] Docker 未安装或未运行，跳过 MaxKB 自动启动")
+            return False
+    except FileNotFoundError:
+        print("[WARN] Docker 命令不可用，跳过 MaxKB 自动启动")
+        return False
+    except subprocess.TimeoutExpired:
+        print("[WARN] Docker 响应超时，跳过 MaxKB 自动启动")
+        return False
+    except Exception as e:
+        print(f"[WARN] Docker 检查失败: {e}")
+        return False
+    
+    try:
+        # 检查容器是否存在
+        result = subprocess.run(
+            ["docker", "inspect", container_name],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode != 0:
+            # 容器不存在，尝试使用 docker-compose 创建
+            print(f"[INFO] MaxKB 容器不存在，尝试创建...")
+            compose_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose.maxkb.yml")
+            
+            if os.path.exists(compose_file):
+                result = subprocess.run(
+                    ["docker", "compose", "-f", compose_file, "up", "-d"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if result.returncode == 0:
+                    print(f"[OK] MaxKB 容器已创建并启动")
+                    print("[INFO] 等待 MaxKB 服务就绪（首次启动可能需要 30-60 秒）...")
+                    time.sleep(15)  # 等待服务初始化
+                    return True
+                else:
+                    print(f"[WARN] MaxKB 容器创建失败: {result.stderr}")
+                    return False
+            else:
+                print(f"[WARN] 未找到 docker-compose.maxkb.yml，请手动启动 MaxKB")
+                return False
+        
+        # 容器存在，检查是否正在运行
+        import json
+        container_info = json.loads(result.stdout)
+        if container_info and len(container_info) > 0:
+            state = container_info[0].get("State", {})
+            is_running = state.get("Running", False)
+            
+            if is_running:
+                print(f"[OK] MaxKB 容器已在运行")
+                return True
+            else:
+                # 容器存在但未运行，启动它
+                print(f"[INFO] 正在启动 MaxKB 容器...")
+                result = subprocess.run(
+                    ["docker", "start", container_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                if result.returncode == 0:
+                    print(f"[OK] MaxKB 容器已启动")
+                    print("[INFO] 等待 MaxKB 服务就绪...")
+                    time.sleep(10)  # 等待服务启动
+                    return True
+                else:
+                    print(f"[WARN] MaxKB 容器启动失败: {result.stderr}")
+                    return False
+        
+    except subprocess.TimeoutExpired:
+        print("[WARN] Docker 操作超时")
+        return False
+    except Exception as e:
+        print(f"[WARN] MaxKB 容器检查失败: {e}")
+        return False
+    
+    return False
+
+
 if __name__ == '__main__':
     print("\n" + "="*60)
     print("  ___                   __     ___     _        ")
@@ -1571,6 +1905,10 @@ if __name__ == '__main__':
     print(" \\___/| .__/ \\___|_| |_|   \\_/  |_|___/\\__\\__,_|")
     print("      |_|   GitHub 仓库生态画像分析平台          ")
     print("="*60)
+    
+    # 自动启动 MaxKB Docker 容器
+    print("\n[Docker] 检查 MaxKB 服务状态...")
+    ensure_maxkb_running()
     
     logger.info("=" * 50)
     logger.info("OpenVista 后端服务启动中...")
@@ -1594,17 +1932,18 @@ if __name__ == '__main__':
     
     # 显示 GitPulse 状态
     logger.info("[GitPulse 预测器]")
-    if GITPULSE_AVAILABLE and predictor:
-        try:
-            logger.info(f"  状态: 已初始化 ✓")
-            logger.info(f"  设备: {predictor.device}")
-            logger.info(f"  模型: {predictor.predictor.__class__.__name__}")
-            logger.info(f"  支持指标: {len(predictor.supported_metrics)} 个")
-        except Exception as e:
-            logger.error(f"  状态检查失败: {e}")
-    else:
-        logger.warning(f"  状态: 不可用 ✗")
-        logger.warning(f"  请安装依赖: pip install -r GitPulse/requirements_predict.txt")
+    try:
+        service = get_gitpulse_service()
+        if service and service.is_available():
+            logger.info(f"  状态: 已初始化 (OK)")
+            logger.info(f"  模型: GitPulse Transformer+Text")
+        else:
+            err = service.get_error() if service else "服务未初始化"
+            logger.warning(f"  状态: 不可用")
+            logger.warning(f"  原因: {err}")
+    except Exception as e:
+        logger.warning(f"  状态: 初始化失败")
+        logger.warning(f"  错误: {e}")
     
     # 显示 AI Agent 状态
     logger.info("[AI Agent]")

@@ -1,0 +1,2 @@
+*.pt filter=lfs diff=lfs merge=lfs -text
+maxkb-export/db/maxkb_full.sql filter=lfs diff=lfs merge=lfs -text

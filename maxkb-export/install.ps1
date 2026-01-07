@@ -5,7 +5,7 @@
 $ErrorActionPreference = "Continue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BackupFile = "$ScriptDir\db\maxkb_full.dump"
-$MaxKBImage = "registry.fit2cloud.com/maxkb/maxkb:latest"
+$MaxKBImage = "registry.fit2cloud.com/maxkb/maxkb"
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
@@ -28,21 +28,29 @@ try {
 Write-Host "[2/5] 检查数据文件..." -ForegroundColor Yellow
 if (-not (Test-Path $BackupFile)) {
     Write-Host "✗ 数据库备份不存在: $BackupFile" -ForegroundColor Red
+    Write-Host "请确保 db/maxkb_full.dump 文件存在" -ForegroundColor Red
     exit 1
 }
-Write-Host "✓ 数据文件已就绪" -ForegroundColor Green
+$fileSize = (Get-Item $BackupFile).Length / 1MB
+Write-Host "✓ 数据文件已就绪 (大小: $([math]::Round($fileSize, 2)) MB)" -ForegroundColor Green
 
-# 清理旧容器
+# 检查备份文件大小（如果太小说明是空备份）
+if ($fileSize -lt 1) {
+    Write-Host "⚠ 警告: 备份文件过小，可能是空数据库备份" -ForegroundColor Yellow
+    Write-Host "  请确保备份文件包含完整数据（通常 > 10MB）" -ForegroundColor Yellow
+}
+
+# 清理旧容器和数据卷
 Write-Host "[3/5] 准备环境..." -ForegroundColor Yellow
 docker stop openvista-maxkb 2>$null
 docker rm openvista-maxkb 2>$null
-docker volume rm openvista_maxkb_data openvista_maxkb_postgres 2>$null
-docker volume create openvista_maxkb_data | Out-Null
-docker volume create openvista_maxkb_postgres | Out-Null
-Write-Host "✓ 环境已清理" -ForegroundColor Green
+# 创建新的数据卷（不删除旧的，避免误删用户数据）
+docker volume create openvista_maxkb_data 2>$null | Out-Null
+docker volume create openvista_maxkb_postgres 2>$null | Out-Null
+Write-Host "✓ 环境已准备" -ForegroundColor Green
 
-# 启动 MaxKB（让它初始化数据库结构）
-Write-Host "[4/5] 初始化 MaxKB..." -ForegroundColor Yellow
+# 启动 MaxKB
+Write-Host "[4/5] 启动 MaxKB..." -ForegroundColor Yellow
 docker run -d --name openvista-maxkb `
     -p 8080:8080 `
     -v openvista_maxkb_data:/opt/maxkb/model `
@@ -54,16 +62,23 @@ docker run -d --name openvista-maxkb `
     -e DB_NAME=maxkb `
     $MaxKBImage | Out-Null
 
-Write-Host "  等待 MaxKB 完全初始化（约60秒）..."
+Write-Host "  等待 MaxKB 初始化（约60秒）..."
 Start-Sleep -Seconds 60
 
 # 检查服务是否启动
-for ($i = 1; $i -le 30; $i++) {
+$maxRetries = 30
+for ($i = 1; $i -le $maxRetries; $i++) {
     try {
-        $null = Invoke-WebRequest -Uri "http://localhost:8080" -TimeoutSec 3 -ErrorAction SilentlyContinue
-        Write-Host "✓ MaxKB 初始化完成" -ForegroundColor Green
-        break
+        $response = Invoke-WebRequest -Uri "http://localhost:8080" -TimeoutSec 3 -ErrorAction SilentlyContinue
+        if ($response.StatusCode -eq 200) {
+            Write-Host "✓ MaxKB 启动成功" -ForegroundColor Green
+            break
+        }
     } catch {
+        if ($i -eq $maxRetries) {
+            Write-Host "✗ MaxKB 启动超时" -ForegroundColor Red
+            exit 1
+        }
         Start-Sleep -Seconds 3
     }
 }
@@ -71,34 +86,37 @@ for ($i = 1; $i -le 30; $i++) {
 # 恢复数据库
 Write-Host "[5/5] 恢复数据库..." -ForegroundColor Yellow
 
-# 复制备份文件
+# 复制备份文件到容器
 docker cp $BackupFile openvista-maxkb:/tmp/backup.dump
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "✗ 复制备份文件失败" -ForegroundColor Red
+    exit 1
+}
 
-# 恢复完整数据库（包括表结构和数据）
-Write-Host "  恢复数据库..."
-docker exec openvista-maxkb bash -c "pg_restore -U root -d maxkb --clean --if-exists /tmp/backup.dump 2>/dev/null || true"
+# 使用 pg_restore 恢复（--clean 会先删除再创建）
+Write-Host "  正在恢复数据（可能需要几分钟）..."
+docker exec openvista-maxkb bash -c "pg_restore -U root -d maxkb --clean --if-exists --no-owner /tmp/backup.dump 2>/dev/null || true"
 
-# 修复迁移冲突：使用 Django 的 --fake 选项标记所有迁移为已应用
-Write-Host "  修复数据库迁移状态..."
-Write-Host "  使用 Django migrate --fake 标记迁移为已应用..."
-docker exec openvista-maxkb bash -c "cd /opt/maxkb-app/apps && python3 manage.py migrate --fake 2>&1" | Select-String -Pattern "FAKED|No migrations|Applying" | Out-Null
-Write-Host "  ✓ 迁移已标记为已应用" -ForegroundColor Green
-
-# 清理
+# 清理临时文件
 docker exec openvista-maxkb rm -f /tmp/backup.dump
 
-# 重置密码
-Write-Host "  重置管理员密码..."
-$passwordMd5 = "0df6c52f03e1c75504c7bb9a09c2a016"
-$sql = "UPDATE `"user`" SET password = '$passwordMd5' WHERE username = 'admin';"
-echo $sql | docker exec -i openvista-maxkb psql -U root -d maxkb 2>$null | Out-Null
-
-# 重启服务以应用数据库更改
-Write-Host "  重启服务以应用数据库更改..."
+# 重启服务使配置生效
+Write-Host "  重启服务..."
 docker restart openvista-maxkb | Out-Null
-Start-Sleep -Seconds 10
+Start-Sleep -Seconds 15
 
-Write-Host "✓ 数据库恢复完成" -ForegroundColor Green
+# 等待服务完全启动
+for ($i = 1; $i -le 20; $i++) {
+    try {
+        $response = Invoke-WebRequest -Uri "http://localhost:8080" -TimeoutSec 3 -ErrorAction SilentlyContinue
+        if ($response.StatusCode -eq 200) {
+            Write-Host "✓ 数据库恢复完成" -ForegroundColor Green
+            break
+        }
+    } catch {
+        Start-Sleep -Seconds 3
+    }
+}
 
 # 完成
 Write-Host ""
@@ -107,8 +125,7 @@ Write-Host "    安装完成！" -ForegroundColor Green
 Write-Host "============================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "访问地址: " -NoNewline; Write-Host "http://localhost:8080" -ForegroundColor Cyan
-Write-Host "用户名:   " -NoNewline; Write-Host "admin" -ForegroundColor Cyan
-Write-Host "密码:     " -NoNewline; Write-Host "MaxKB@123456" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "重要：登录后请在「系统设置」→「模型管理」中配置 DeepSeek API Key" -ForegroundColor Yellow
+Write-Host "如果备份包含用户数据，请使用备份中的账户登录。" -ForegroundColor Yellow
+Write-Host "如果是全新安装，请先注册一个新账户。" -ForegroundColor Yellow
 Write-Host ""

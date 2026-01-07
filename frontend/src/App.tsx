@@ -1,16 +1,43 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Activity, TrendingUp, GitBranch, Users, AlertCircle, FileText, BarChart3, RefreshCw, Sparkles, ChevronDown, ChevronUp, Download, Loader2, Award } from 'lucide-react'
+import { Activity, TrendingUp, GitBranch, Users, AlertCircle, FileText, BarChart3, RefreshCw, Sparkles, ChevronDown, ChevronUp, Loader2, CheckCircle2, Zap, Award } from 'lucide-react'
 import GroupedTimeSeriesChart from './components/GroupedTimeSeriesChart'
 import IssueAnalysis from './components/IssueAnalysis'
-import DataAnalysisPanel from './components/DataAnalysisPanel'
-import CHAOSSEvaluation from './components/CHAOSSEvaluation'
+import IssueAIAnalysis from './components/IssueAIAnalysis'
+import ForecastChart from './components/ForecastChart'
 import Header from './components/Header'
 import StatsCard from './components/StatsCard'
 import ProjectSearch from './components/ProjectSearch'
 import HomePage from './components/HomePage'
 import RepoHeader from './components/RepoHeader'
+import CHAOSSEvaluation from './components/CHAOSSEvaluation'
+import ChatAssistant from './components/ChatAssistant'
+import DocumentationPage from './components/DocumentationPage'
 import type { DemoData, GroupedTimeSeriesData, IssueData } from './types'
+
+// 爬取进度类型
+interface CrawlProgress {
+  step: number
+  stepName: string
+  message: string
+  progress: number
+}
+
+// 渲染内联 Markdown（加粗、斜体等）
+function renderMarkdownInline(text: string): React.ReactNode {
+  // 处理 **加粗**
+  const parts = text.split(/(\*\*[^*]+\*\*)/)
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return (
+        <span key={i} className="text-cyber-primary font-medium bg-cyber-primary/10 px-1 rounded">
+          {part.slice(2, -2)}
+        </span>
+      )
+    }
+    return part
+  })
+}
 
 function App() {
   // 判断是否显示首页：
@@ -83,8 +110,8 @@ function App() {
     const saved = localStorage.getItem('selectedMonth')
     return saved || null
   })
-  const [activeTab, setActiveTab] = useState<'timeseries' | 'issues' | 'analysis' | 'chaoss'>(() => {
-    const saved = localStorage.getItem('activeTab') as 'timeseries' | 'issues' | 'analysis' | 'chaoss' | null
+  const [activeTab, setActiveTab] = useState<'timeseries' | 'forecast' | 'issues' | 'chaoss' | 'analysis'>(() => {
+    const saved = localStorage.getItem('activeTab') as 'timeseries' | 'forecast' | 'issues' | 'chaoss' | 'analysis' | null
     return saved || 'timeseries'
   })
   const [repoInfo, setRepoInfo] = useState<any>(null)
@@ -92,8 +119,19 @@ function App() {
   const [needsTextCrawl, setNeedsTextCrawl] = useState(false)
   const [crawlingText, setCrawlingText] = useState(false)
   const [isInitialized, setIsInitialized] = useState(false)
+  
+  // 爬取进度状态（用于在主界面显示）
+  const [crawlProgress, setCrawlProgress] = useState<CrawlProgress | null>(null)
+  const [isCrawling, setIsCrawling] = useState(false)
+  
+  // 文档页面状态
+  const [showDocs, setShowDocs] = useState(false)
+  
+  // HomePage预填值（用于从搜索框跳转）
+  const [homePageInitialOwner, setHomePageInitialOwner] = useState('')
+  const [homePageInitialRepo, setHomePageInitialRepo] = useState('')
 
-  // 页面加载时，如果有保存的项目且是刷新页面，恢复并加载数据
+  // 页面加载时，如果有保存的项目，恢复并加载数据
   useEffect(() => {
     if (!isInitialized) {
       // 使用 Performance API 检测页面加载类型
@@ -114,7 +152,7 @@ function App() {
       const savedProject = localStorage.getItem('currentProject')
       
       // 恢复标签页和月份
-      const savedTab = localStorage.getItem('activeTab') as 'timeseries' | 'issues' | 'analysis' | 'chaoss' | null
+      const savedTab = localStorage.getItem('activeTab') as 'timeseries' | 'forecast' | 'issues' | 'analysis' | null
       const savedMonth = localStorage.getItem('selectedMonth')
       if (savedTab) {
         setActiveTab(savedTab)
@@ -190,10 +228,24 @@ function App() {
     console.log('项目准备完成:', projectName)
     setCurrentProject(projectName)
     setShowHomePage(false)
+    // 清空预填值
+    setHomePageInitialOwner('')
+    setHomePageInitialRepo('')
     // 立即加载数据
     setTimeout(() => {
       fetchDataForProject(projectName)
     }, 100)
+  }
+  
+  // 处理从搜索框跳转到首页（项目不存在时）
+  const handleNavigateToHome = (owner: string, repo: string) => {
+    console.log('项目不存在，跳转到首页进行爬取:', owner, repo)
+    setHomePageInitialOwner(owner)
+    setHomePageInitialRepo(repo)
+    setShowHomePage(true)
+    setCurrentProject('')  // 清空当前项目
+    setData(null)  // 清空数据
+    setRepoInfo(null)  // 清空仓库信息
   }
 
   const fetchDataForProject = async (projectName: string) => {
@@ -269,6 +321,11 @@ function App() {
       const summaryResponse = await fetch(`/api/repo/${encodeURIComponent(repoKey)}/summary`)
       const summaryData = await summaryResponse.json()
       
+      // 调试日志
+      console.log('[fetchData] summaryData:', summaryData)
+      console.log('[fetchData] projectSummary:', summaryData.projectSummary)
+      console.log('[fetchData] aiSummary exists:', !!summaryData.projectSummary?.aiSummary)
+      
       setData({
         repoKey: projectName,
         groupedTimeseries: timeseriesData.error ? null : timeseriesData,
@@ -276,30 +333,6 @@ function App() {
         monthlyKeywords: issuesData.monthlyKeywords || {},
         projectSummary: summaryData.projectSummary || null
       })
-      
-      // 检查是否缺少文本数据（用于 AI 助手）
-      // 无论是否有 aiSummary，都检查一下是否有完整的文本数据
-      const parts = projectName.includes('/') ? projectName.split('/') : projectName.split('_')
-      if (parts.length >= 2) {
-        try {
-          const checkResp = await fetch(`/api/check_project?owner=${encodeURIComponent(parts[0])}&repo=${encodeURIComponent(parts.slice(1).join('_'))}`)
-          const checkData = await checkResp.json()
-          // 只根据后端返回的 needsTextCrawl 判断，不再依赖 aiSummary
-          // 因为补爬文本数据后，即使没有 aiSummary，也应该认为有文本数据了
-          setNeedsTextCrawl(checkData.needsTextCrawl || false)
-          console.log('[检查文本数据]', { 
-            needsTextCrawl: checkData.needsTextCrawl, 
-            hasText: checkData.hasText,
-            hasAiSummary: !!summaryData.projectSummary?.aiSummary,
-            finalNeedsCrawl: checkData.needsTextCrawl || false
-          })
-        } catch (e) {
-          console.warn('检查文本数据失败:', e)
-          setNeedsTextCrawl(!summaryData.projectSummary?.aiSummary)
-        }
-      } else {
-        setNeedsTextCrawl(!summaryData.projectSummary?.aiSummary)
-      }
     } catch (err) {
       setError('无法连接到后端服务，请确保后端已启动')
       console.error('Error fetching data:', err)
@@ -382,85 +415,56 @@ function App() {
     setActiveTab('issues')
   }
 
-  // 从分组数据中提取统计信息（含变化率）
+  // 从分组数据中提取统计信息
   const getStats = () => {
     if (!data?.groupedTimeseries?.groups) {
-      return { 
-        stars: { value: 0, change: '', month: '' },
-        commits: { value: 0, change: '', month: '' },
-        prs: { value: 0, change: '', month: '' },
-        contributors: { value: 0, change: '', month: '' }
-      }
+      return { stars: 0, commits: 0, prs: 0, contributors: 0 }
     }
     
     const groups = data.groupedTimeseries.groups
-    const timeAxis = data.groupedTimeseries.timeAxis || []
     
-    const getLatestWithChange = (groupKey: string, metricKey: string) => {
+    const getLatestValue = (groupKey: string, metricKey: string) => {
       const group = groups[groupKey]
-      if (!group?.metrics) return { value: 0, change: '', month: '' }
+      if (!group?.metrics) return 0
       
       // 找到匹配的指标
       const metric = Object.entries(group.metrics).find(([key]) => 
         key.toLowerCase().includes(metricKey.toLowerCase())
       )
       
-      if (!metric?.[1]?.data) return { value: 0, change: '', month: '' }
+      if (!metric?.[1]?.data) return 0
       
+      // 找最后一个非空值
       const arr = metric[1].data
-      
-      // 找最后一个非空值及其索引
-      let latestValue = 0
-      let latestIndex = -1
       for (let i = arr.length - 1; i >= 0; i--) {
         if (arr[i] !== null && arr[i] !== undefined) {
-          latestValue = arr[i] as number
-          latestIndex = i
-          break
+          return arr[i] as number
         }
       }
-      
-      // 找倒数第二个非空值计算环比
-      let prevValue = 0
-      for (let i = latestIndex - 1; i >= 0; i--) {
-        if (arr[i] !== null && arr[i] !== undefined) {
-          prevValue = arr[i] as number
-          break
-        }
-      }
-      
-      // 计算环比变化率
-      let change = ''
-      if (prevValue > 0 && latestValue !== prevValue) {
-        const changeRate = ((latestValue - prevValue) / prevValue) * 100
-        if (changeRate > 0) {
-          change = `+${changeRate.toFixed(1)}%`
-        } else {
-          change = `${changeRate.toFixed(1)}%`
-        }
-      }
-      
-      // 获取月份标签
-      const month = latestIndex >= 0 && timeAxis[latestIndex] ? timeAxis[latestIndex] : ''
-      
-      return { value: latestValue, change, month }
+      return 0
     }
     
     return {
-      stars: getLatestWithChange('popularity', 'star'),
-      commits: getLatestWithChange('development', '提交'),
-      prs: getLatestWithChange('development', 'pr接受'),
-      contributors: getLatestWithChange('contributors', '参与者')
+      stars: getLatestValue('popularity', 'star'),
+      commits: getLatestValue('development', '提交'),
+      prs: getLatestValue('development', 'pr接受'),
+      contributors: getLatestValue('contributors', '参与者')
     }
   }
 
   const stats = getStats()
-  const latestMonth = stats.stars.month || stats.commits.month || ''
 
   // 显示首页（优先检查，如果显示首页就直接返回）
   if (showHomePage && isInitialized) {
-    console.log('[渲染] 显示首页', { showHomePage, isInitialized, currentProject })
-    return <HomePage onProjectReady={handleProjectReady} />
+    return <HomePage 
+      onProjectReady={handleProjectReady} 
+      onProgressUpdate={(progress) => {
+        setCrawlProgress(progress)
+        setIsCrawling(progress.progress < 100)
+      }}
+      initialOwner={homePageInitialOwner}
+      initialRepo={homePageInitialRepo}
+    />
   }
   
   // 如果正在初始化且有项目，显示加载状态
@@ -468,8 +472,8 @@ function App() {
     return <LoadingScreen />
   }
   
-  // 如果显示首页但未初始化，显示加载状态
-  if (showHomePage && !isInitialized) {
+  // 如果正在初始化且有项目，显示加载状态
+  if (!isInitialized && currentProject) {
     return <LoadingScreen />
   }
 
@@ -512,13 +516,92 @@ function App() {
         <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-cyber-secondary/5 rounded-full blur-3xl" />
       </div>
 
-      <Header repoName={data?.repoKey} onBackToHome={() => {
-        console.log('[返回首页] 清除当前项目并返回首页')
-        setCurrentProject('')
-        setShowHomePage(true)
-        setData(null)
-        setError(null)
-      }} />
+      <Header repoName={data?.repoKey} onBackToHome={() => setShowHomePage(true)} onOpenDocs={() => setShowDocs(true)} />
+      
+      {/* 底部进度条 - 显示后台爬取进度 */}
+      <AnimatePresence>
+        {isCrawling && crawlProgress && crawlProgress.progress < 100 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-0 left-0 right-0 z-50"
+          >
+            <div className="bg-cyber-card/95 backdrop-blur-xl border-t border-cyber-primary/30">
+              {/* 进度条 */}
+              <div className="h-1 bg-cyber-bg">
+                <motion.div 
+                  className="h-full bg-gradient-to-r from-cyber-primary to-cyber-secondary"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${crawlProgress.progress}%` }}
+                  transition={{ duration: 0.3 }}
+                />
+              </div>
+              
+              {/* 步骤信息 */}
+              <div className="container mx-auto px-4 py-2 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="w-4 h-4 text-cyber-primary animate-spin" />
+                  <span className="text-sm text-cyber-text font-chinese">{crawlProgress.message}</span>
+                </div>
+                
+                {/* 步骤标签 - 与后端实际进度一致 */}
+                <div className="flex items-center gap-2 text-xs">
+                  {[
+                    { name: '指标数据', startAt: 5, endAt: 20 },
+                    { name: '描述文本', startAt: 20, endAt: 50 },
+                    { name: 'Issue/PR', startAt: 50, endAt: 80 },
+                    { name: '数据对齐', startAt: 80, endAt: 95 },
+                    { name: '完成', startAt: 95, endAt: 100 },
+                  ].map((step, i) => {
+                    const isComplete = crawlProgress.progress >= step.endAt
+                    const isActive = crawlProgress.progress >= step.startAt && crawlProgress.progress < step.endAt
+                    return (
+                      <span 
+                        key={i}
+                        className={`px-2 py-0.5 rounded-full transition-colors ${
+                          isComplete 
+                            ? 'bg-cyber-success/20 text-cyber-success' 
+                            : isActive
+                            ? 'bg-cyber-primary/20 text-cyber-primary animate-pulse'
+                            : 'bg-cyber-border/30 text-cyber-muted/50'
+                        }`}
+                      >
+                        {isComplete ? '✓' : isActive ? '⋯' : i + 1}. {step.name}
+                      </span>
+                    )
+                  })}
+                  <span className="ml-2 font-mono text-cyber-primary">{crawlProgress.progress}%</span>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 爬取完成提示 - 更简洁 */}
+      <AnimatePresence>
+        {crawlProgress && crawlProgress.progress >= 100 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-4 right-4 z-50"
+            onAnimationComplete={() => {
+              setTimeout(() => {
+                setIsCrawling(false)
+                setCrawlProgress(null)
+                fetchData()
+              }, 2000)
+            }}
+          >
+            <div className="bg-cyber-success/20 backdrop-blur-xl rounded-lg border border-cyber-success/50 px-4 py-2 shadow-lg flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-cyber-success" />
+              <span className="text-sm text-cyber-success font-chinese">数据爬取完成</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <main className="relative z-10 container mx-auto px-4 py-8">
         {/* 项目搜索区域 - 更自然的设计 */}
@@ -533,6 +616,7 @@ function App() {
           <ProjectSearch 
             onSelectProject={handleProjectSelect}
             currentProject={currentProject}
+            onNavigateToHome={handleNavigateToHome}
           />
         </motion.div>
 
@@ -549,11 +633,8 @@ function App() {
                   {data.repoKey}
                 </h2>
                 <p className="text-sm text-cyber-muted font-chinese">
-                  OpenDigger 数据 · {data.groupedTimeseries.startMonth} 至 {data.groupedTimeseries.endMonth}
+                  真实数据 · {data.groupedTimeseries.startMonth} 至 {data.groupedTimeseries.endMonth}
                   · {data.groupedTimeseries.timeAxis.length} 个月
-                </p>
-                <p className="text-xs text-cyber-muted/60 font-chinese mt-1">
-                  💡 OpenDigger 数据通常有 2-3 个月延迟，最新月份可能暂无数据
                 </p>
               </div>
               <button
@@ -567,98 +648,62 @@ function App() {
           </motion.div>
         )}
 
-        {/* 统计卡片 */}
+        {/* 统计卡片 - 当月数据 */}
         <motion.div 
           className="mb-8"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
         >
-          {/* 月份说明 */}
-          {latestMonth && (
-            <div className="mb-4 flex items-center gap-2 text-sm text-cyber-muted font-chinese">
-              <span className="inline-block w-2 h-2 rounded-full bg-cyber-primary animate-pulse" />
-              <span>以下数据为 <span className="text-cyber-primary font-mono">{latestMonth}</span> 最新月指标</span>
-              <span className="text-cyber-muted/50">（环比上月）</span>
+          {/* 当月数据提示 */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 bg-cyber-primary rounded-full animate-pulse" />
+              <span className="text-sm text-cyber-muted font-chinese">
+                最新月度数据（{data?.groupedTimeseries?.endMonth || '加载中'}）
+              </span>
             </div>
-          )}
+            <span className="text-xs text-cyber-muted/70 font-chinese">
+              以下为当月指标数值，点击图表查看完整趋势
+            </span>
+          </div>
+          
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <StatsCard
-            icon={<Activity className="w-6 h-6" />}
-              title="Star 增量"
-              value={Math.round(stats.stars.value)}
-              change={stats.stars.change}
-            color="primary"
-          />
-          <StatsCard
-            icon={<GitBranch className="w-6 h-6" />}
-              title="代码提交数"
-              value={Math.round(stats.commits.value)}
-              change={stats.commits.change}
-            color="success"
-          />
-          <StatsCard
-            icon={<TrendingUp className="w-6 h-6" />}
-              title="PR 接受数"
-              value={Math.round(stats.prs.value)}
-              change={stats.prs.change}
-            color="secondary"
-          />
-          <StatsCard
-            icon={<Users className="w-6 h-6" />}
-              title="活跃参与者"
-              value={Math.round(stats.contributors.value)}
-              change={stats.contributors.change}
-            color="accent"
-          />
+            <StatsCard
+              icon={<Activity className="w-6 h-6" />}
+              title="Star 数"
+              value={Math.round(stats.stars)}
+              change=""
+              color="primary"
+            />
+            <StatsCard
+              icon={<GitBranch className="w-6 h-6" />}
+              title="代码提交"
+              value={Math.round(stats.commits)}
+              change=""
+              color="success"
+            />
+            <StatsCard
+              icon={<TrendingUp className="w-6 h-6" />}
+              title="PR 接受"
+              value={Math.round(stats.prs)}
+              change=""
+              color="secondary"
+            />
+            <StatsCard
+              icon={<Users className="w-6 h-6" />}
+              title="参与者"
+              value={Math.round(stats.contributors)}
+              change=""
+              color="accent"
+            />
           </div>
         </motion.div>
 
-        {/* 缺少文本数据提示 - 当缺少文本数据时显示 */}
-        {needsTextCrawl && (
-          <motion.div
-            className="mb-8 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <AlertCircle className="w-5 h-5 text-yellow-400" />
-                <div>
-                  <p className="text-yellow-200 font-chinese text-sm">
-                    该项目缺少描述性文本数据，AI 助手功能可能受限
-                  </p>
-                  <p className="text-yellow-200/60 font-chinese text-xs mt-1">
-                    点击补爬可获取 README、文档等文本数据，用于知识库问答
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={handleCrawlText}
-                disabled={crawlingText}
-                className="flex items-center gap-2 px-4 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 
-                         text-yellow-200 rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap"
-              >
-                {crawlingText ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span className="text-sm">补爬中...</span>
-                  </>
-                ) : (
-                  <>
-                    <Download className="w-4 h-4" />
-                    <span className="text-sm">补爬文本</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </motion.div>
-        )}
-
-        {/* AI 项目摘要 */}
+        {/* AI 项目摘要 - 改进排版 */}
         {data?.projectSummary?.aiSummary && (
           <motion.div
-            className="mb-8 bg-gradient-to-br from-cyber-card/60 to-cyber-card/30 rounded-xl border border-cyber-primary/30 overflow-hidden"
+            className="mb-8 bg-gradient-to-br from-cyber-card/80 to-cyber-card/40 rounded-xl border border-cyber-primary/20 overflow-hidden shadow-lg"
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.1 }}
@@ -668,26 +713,33 @@ function App() {
               className="w-full px-6 py-4 flex items-center justify-between hover:bg-cyber-primary/5 transition-colors"
             >
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-cyber-primary/20 rounded-lg">
+                <div className="p-2 bg-gradient-to-br from-cyber-primary/30 to-cyber-secondary/30 rounded-lg">
                   <Sparkles className="w-5 h-5 text-cyber-primary" />
                 </div>
                 <div className="text-left">
-                  <h3 className="text-lg font-display font-bold text-cyber-text">
-                    AI 项目摘要
+                  <h3 className="text-lg font-display font-bold text-cyber-text flex items-center gap-2">
+                    AI 智能摘要
+                    <span className="text-xs font-normal text-cyber-primary bg-cyber-primary/10 px-2 py-0.5 rounded-full">
+                      DeepSeek
+                    </span>
                   </h3>
                   <p className="text-sm text-cyber-muted font-chinese">
-                    基于 {data.projectSummary.dataRange?.months_count || 0} 个月数据生成
-                    {data.projectSummary.dataRange?.start && data.projectSummary.dataRange?.end && (
-                      <span> · {data.projectSummary.dataRange.start} 至 {data.projectSummary.dataRange.end}</span>
+                    {data.projectSummary.dataRange?.start && data.projectSummary.dataRange?.end ? (
+                      <>{data.projectSummary.dataRange.start} 至 {data.projectSummary.dataRange.end} · {data.projectSummary.total_months || data.projectSummary.dataRange?.months_count || 0} 个月数据</>
+                    ) : (
+                      <>基于项目完整数据生成</>
                     )}
                   </p>
                 </div>
               </div>
-              {summaryExpanded ? (
-                <ChevronUp className="w-5 h-5 text-cyber-muted" />
-              ) : (
-                <ChevronDown className="w-5 h-5 text-cyber-muted" />
-              )}
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-cyber-muted font-chinese">{summaryExpanded ? '收起' : '展开'}</span>
+                {summaryExpanded ? (
+                  <ChevronUp className="w-5 h-5 text-cyber-muted" />
+                ) : (
+                  <ChevronDown className="w-5 h-5 text-cyber-muted" />
+                )}
+              </div>
             </button>
             
             <AnimatePresence>
@@ -700,47 +752,65 @@ function App() {
                   className="overflow-hidden"
                 >
                   <div className="px-6 pb-6">
-                    <div className="p-4 bg-cyber-bg/50 rounded-lg border border-cyber-border">
-                      <p className="text-cyber-text font-chinese leading-relaxed whitespace-pre-wrap">
-                        {data.projectSummary.aiSummary}
-                      </p>
+                    {/* 摘要内容 - 完整 Markdown 渲染 */}
+                    <div className="prose prose-invert max-w-none">
+                      {data.projectSummary.aiSummary.split('\n').map((line: string, idx: number) => {
+                        // 处理 ### 三级标题
+                        if (line.startsWith('### ')) {
+                          return (
+                            <h5 key={idx} className="text-base font-display font-bold text-cyber-primary mt-3 mb-2 flex items-center gap-2">
+                              <span className="w-1 h-4 bg-cyber-primary rounded-full"></span>
+                              {line.replace('### ', '')}
+                            </h5>
+                          )
+                        }
+                        // 处理 ## 二级标题
+                        if (line.startsWith('## ')) {
+                          return (
+                            <h4 key={idx} className="text-lg font-display font-bold text-cyber-secondary mt-4 mb-2 flex items-center gap-2">
+                              <span className="w-1 h-5 bg-cyber-secondary rounded-full"></span>
+                              {line.replace('## ', '')}
+                            </h4>
+                          )
+                        }
+                        // 处理 # 一级标题
+                        if (line.startsWith('# ') && !line.startsWith('## ') && !line.startsWith('### ')) {
+                          return (
+                            <h3 key={idx} className="text-xl font-display font-bold text-cyber-text mt-4 mb-3">
+                              {line.replace('# ', '')}
+                            </h3>
+                          )
+                        }
+                        // 处理数字列表 (1. 2. 3.)
+                        const numListMatch = line.match(/^(\d+)\.\s+(.+)$/)
+                        if (numListMatch) {
+                          return (
+                            <div key={idx} className="flex items-start gap-2 text-sm text-cyber-text/90 font-chinese ml-2 mb-1">
+                              <span className="text-cyber-secondary font-mono min-w-[1.5rem]">{numListMatch[1]}.</span>
+                              <span>{renderMarkdownInline(numListMatch[2])}</span>
+                            </div>
+                          )
+                        }
+                        // 处理列表项
+                        if (line.startsWith('- ') || line.startsWith('* ')) {
+                          return (
+                            <div key={idx} className="flex items-start gap-2 text-sm text-cyber-text/80 font-chinese ml-2 mb-1">
+                              <span className="text-cyber-primary mt-1">•</span>
+                              <span>{renderMarkdownInline(line.slice(2))}</span>
+                            </div>
+                          )
+                        }
+                        // 普通段落（处理内联 Markdown）
+                        if (line.trim()) {
+                          return (
+                            <p key={idx} className="text-cyber-text/90 font-chinese leading-relaxed mb-2 text-sm">
+                              {renderMarkdownInline(line)}
+                            </p>
+                          )
+                        }
+                        return null
+                      })}
                     </div>
-                    
-                    {/* Issue 统计摘要（抽样数据） */}
-                    {data.projectSummary.issueStats && (
-                      <div className="mt-4">
-                        <p className="text-xs text-cyber-muted font-chinese mb-2 flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full"></span>
-                          以下为抽样统计，仅代表样本分布趋势，非实际总数
-                        </p>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        <div className="p-3 bg-cyber-primary/10 rounded-lg text-center">
-                          <div className="text-2xl font-display font-bold text-cyber-primary">
-                            {data.projectSummary.issueStats.feature || 0}
-                          </div>
-                          <div className="text-xs text-cyber-muted font-chinese">功能需求</div>
-                        </div>
-                        <div className="p-3 bg-cyber-accent/10 rounded-lg text-center">
-                          <div className="text-2xl font-display font-bold text-cyber-accent">
-                            {data.projectSummary.issueStats.bug || 0}
-                          </div>
-                          <div className="text-xs text-cyber-muted font-chinese">Bug 修复</div>
-                        </div>
-                        <div className="p-3 bg-cyber-secondary/10 rounded-lg text-center">
-                          <div className="text-2xl font-display font-bold text-cyber-secondary">
-                            {data.projectSummary.issueStats.question || 0}
-                          </div>
-                          <div className="text-xs text-cyber-muted font-chinese">社区咨询</div>
-                        </div>
-                        <div className="p-3 bg-cyber-muted/10 rounded-lg text-center">
-                          <div className="text-2xl font-display font-bold text-cyber-text">
-                            {data.projectSummary.issueStats.total || 0}
-                          </div>
-                            <div className="text-xs text-cyber-muted font-chinese">抽样总数</div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
                   </div>
                 </motion.div>
               )}
@@ -763,16 +833,16 @@ function App() {
             badge={data?.groupedTimeseries?.groups ? Object.keys(data.groupedTimeseries.groups).length : 0}
           />
           <TabButton
+            active={activeTab === 'forecast'}
+            onClick={() => setActiveTab('forecast')}
+            icon={<Zap className="w-4 h-4" />}
+            label="智能预测"
+          />
+          <TabButton
             active={activeTab === 'issues'}
             onClick={() => setActiveTab('issues')}
             icon={<FileText className="w-4 h-4" />}
             label="Issue 分析"
-          />
-          <TabButton
-            active={activeTab === 'analysis'}
-            onClick={() => setActiveTab('analysis')}
-            icon={<TrendingUp className="w-4 h-4" />}
-            label="数据分析"
           />
           <TabButton
             active={activeTab === 'chaoss'}
@@ -800,6 +870,26 @@ function App() {
             </motion.div>
           )}
           
+          {activeTab === 'forecast' && data?.repoKey && (
+            <motion.div
+              key="forecast"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              transition={{ duration: 0.3 }}
+            >
+              <ForecastChart 
+                repoKey={data.repoKey}
+                historicalData={data.groupedTimeseries?.groups ? 
+                  Object.values(data.groupedTimeseries.groups).reduce((acc, group) => ({
+                    ...acc,
+                    ...group.metrics
+                  }), {}) : undefined
+                }
+              />
+            </motion.div>
+          )}
+          
           {activeTab === 'issues' && (
             <motion.div
               key="issues"
@@ -807,33 +897,24 @@ function App() {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 20 }}
               transition={{ duration: 0.3 }}
+              className="space-y-6"
             >
+              {/* AI Issue 分析 */}
+              {data?.repoKey && (
+                <IssueAIAnalysis repoKey={data.repoKey} />
+              )}
+              
+              {/* Issue 统计图表 */}
               <IssueAnalysis 
                 data={data?.issueCategories as IssueData[]}
                 keywords={data?.monthlyKeywords}
                 selectedMonth={selectedMonth}
                 onMonthSelect={setSelectedMonth}
-                repoKey={data?.repoKey || ''}
               />
             </motion.div>
           )}
-          
-          {activeTab === 'analysis' && (
-            <motion.div
-              key="analysis"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              transition={{ duration: 0.3 }}
-            >
-              <DataAnalysisPanel 
-                repoKey={data?.repoKey || ''}
-                groupedData={data?.groupedTimeseries}
-              />
-            </motion.div>
-          )}
-          
-          {activeTab === 'chaoss' && (
+
+          {activeTab === 'chaoss' && data?.repoKey && (
             <motion.div
               key="chaoss"
               initial={{ opacity: 0, x: -20 }}
@@ -841,11 +922,23 @@ function App() {
               exit={{ opacity: 0, x: 20 }}
               transition={{ duration: 0.3 }}
             >
-              <CHAOSSEvaluation repoKey={currentProject} />
+              <CHAOSSEvaluation repoKey={data.repoKey} />
             </motion.div>
           )}
         </AnimatePresence>
       </main>
+
+      {/* OpenVista 智能助手浮窗 */}
+      <ChatAssistant 
+        repoKey={data?.repoKey} 
+        projectName={currentProject}
+      />
+      
+      {/* 文档页面 */}
+      <DocumentationPage 
+        isOpen={showDocs}
+        onClose={() => setShowDocs(false)}
+      />
     </div>
   )
 }

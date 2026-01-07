@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -235,18 +235,41 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick, repoKey }: 
                     >
                       <defs>
                         <filter id={`glow-${groupKey}`}>
-                          <feGaussianBlur stdDeviation="2" result="coloredBlur" />
+                          <feGaussianBlur stdDeviation="3" result="coloredBlur" />
                           <feMerge>
                             <feMergeNode in="coloredBlur" />
                             <feMergeNode in="SourceGraphic" />
                           </feMerge>
                         </filter>
+                        {/* 为每个指标创建渐变填充 */}
+                        {Object.entries(groupData.metrics).map(([metricKey, metricInfo]) => (
+                          <linearGradient key={`gradient-${metricKey}`} id={`gradient-${groupKey}-${metricKey}`} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor={metricInfo.color} stopOpacity={0.4} />
+                            <stop offset="50%" stopColor={metricInfo.color} stopOpacity={0.15} />
+                            <stop offset="100%" stopColor={metricInfo.color} stopOpacity={0} />
+                          </linearGradient>
+                        ))}
+                        {/* 背景网格渐变 */}
+                        <linearGradient id={`bg-gradient-${groupKey}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="rgba(0, 245, 212, 0.03)" />
+                          <stop offset="100%" stopColor="rgba(10, 15, 26, 0)" />
+                        </linearGradient>
                       </defs>
                       
+                      {/* 背景区域 */}
+                      <rect 
+                        x={0} 
+                        y={0} 
+                        width="100%" 
+                        height="100%" 
+                        fill={`url(#bg-gradient-${groupKey})`}
+                      />
+                      
                       <CartesianGrid 
-                        strokeDasharray="3 3" 
-                        stroke="rgba(45, 58, 79, 0.5)"
+                        strokeDasharray="4 8" 
+                        stroke="rgba(45, 58, 79, 0.3)"
                         vertical={false}
+                        horizontalPoints={[]}
                       />
                       
                       <XAxis 
@@ -267,10 +290,7 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick, repoKey }: 
                         tick={{ fill: '#8b97a8', fontSize: 10 }}
                         tickLine={{ stroke: '#2d3a4f' }}
                         axisLine={{ stroke: '#2d3a4f' }}
-                        domain={[0, 'auto']}
-                        allowDataOverflow={false}
                         tickFormatter={(value) => {
-                          if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`
                           if (value >= 1000) return `${(value / 1000).toFixed(1)}k`
                           return String(Math.round(value))
                         }}
@@ -334,59 +354,97 @@ export default function GroupedTimeSeriesChart({ data, onMonthClick, repoKey }: 
                       />
 
                       {/* 渲染每个指标的线条 */}
-                      {Object.entries(groupData.metrics).map(([metricKey, metricInfo]) => {
+                      {Object.entries(groupData.metrics).map(([metricKey, metricInfo], metricIndex) => {
                         const isHidden = hiddenMetrics.has(`${groupKey}-${metricKey}`)
                         if (isHidden) return null
                         
+                        // 第一个可见指标显示区域填充
+                        const visibleMetrics = Object.entries(groupData.metrics)
+                          .filter(([k]) => !hiddenMetrics.has(`${groupKey}-${k}`))
+                        const isFirstVisible = visibleMetrics[0]?.[0] === metricKey
+                        
                         return (
-                          <Line
-                            key={metricKey}
-                            type="monotone"
-                            dataKey={metricKey}
-                            name={metricInfo.name}
-                            stroke={metricInfo.color}
-                            strokeWidth={2}
-                            dot={(props: { cx?: number; cy?: number; index?: number; payload?: Record<string, unknown> }) => {
-                              const { cx, cy, payload } = props
-                              if (!cx || !cy) return <circle key={`empty-${metricKey}`} />
-                              
-                              // 检查是否为缺失值点
-                              const isMissing = payload?.[`${metricKey}_missing`]
-                              
-                              if (isMissing) {
-                                // 缺失值：显示白色空心圆点
-                                return (
-                                  <g key={`missing-${metricKey}-${props.index}`}>
-                                    <circle
-                                      cx={cx}
-                                      cy={cy}
-                                      r={6}
-                                      fill="transparent"
-                                      stroke="#ffffff"
-                                      strokeWidth={2}
-                                      strokeDasharray="3 2"
-                                    />
-                                    <circle
+                          <React.Fragment key={metricKey}>
+                            {/* 区域填充（仅第一个指标） */}
+                            {isFirstVisible && (
+                              <defs>
+                                <linearGradient id={`area-${groupKey}-${metricKey}`} x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor={metricInfo.color} stopOpacity={0.25} />
+                                  <stop offset="100%" stopColor={metricInfo.color} stopOpacity={0} />
+                                </linearGradient>
+                              </defs>
+                            )}
+                            <Line
+                              type="monotone"
+                              dataKey={metricKey}
+                              name={metricInfo.name}
+                              stroke={metricInfo.color}
+                              strokeWidth={2.5}
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              dot={(props: { cx?: number; cy?: number; index?: number; payload?: Record<string, unknown> }) => {
+                                const { cx, cy, payload } = props
+                                if (!cx || !cy) return <circle key={`empty-${metricKey}`} />
+                                
+                                // 检查是否为缺失值点
+                                const isMissing = payload?.[`${metricKey}_missing`]
+                                
+                                if (isMissing) {
+                                  // 缺失值：显示白色空心圆点
+                                  return (
+                                    <g key={`missing-${metricKey}-${props.index}`}>
+                                      <circle
+                                        cx={cx}
+                                        cy={cy}
+                                        r={6}
+                                        fill="transparent"
+                                        stroke="#ffffff"
+                                        strokeWidth={2}
+                                        strokeDasharray="3 2"
+                                      />
+                                      <circle
+                                        cx={cx}
+                                        cy={cy}
+                                        r={3}
+                                        fill="#ffffff"
+                                        opacity={0.5}
+                                      />
+                                    </g>
+                                  )
+                                }
+                                
+                                // 只在数据点稀疏时显示圆点
+                                const dataLength = chartData.length
+                                const showDot = dataLength <= 24
+                                
+                                if (showDot) {
+                                  return (
+                                    <circle 
+                                      key={`dot-${metricKey}-${props.index}`}
                                       cx={cx}
                                       cy={cy}
                                       r={3}
-                                      fill="#ffffff"
-                                      opacity={0.5}
+                                      fill={metricInfo.color}
+                                      stroke="#0a0f1a"
+                                      strokeWidth={1.5}
                                     />
-                                  </g>
-                                )
-                              }
-                              
-                              // 正常点：不显示（除了 hover 时）
-                              return <circle key={`normal-${metricKey}-${props.index}`} />
-                            }}
-                            activeDot={{ 
-                              r: 5, 
-                              fill: metricInfo.color, 
-                              filter: `url(#glow-${groupKey})` 
-                            }}
-                            connectNulls={false}
-                          />
+                                  )
+                                }
+                                
+                                return <circle key={`normal-${metricKey}-${props.index}`} />
+                              }}
+                              activeDot={{ 
+                                r: 6, 
+                                fill: metricInfo.color, 
+                                stroke: '#0a0f1a',
+                                strokeWidth: 2,
+                                filter: `url(#glow-${groupKey})` 
+                              }}
+                              connectNulls={false}
+                              animationDuration={1500}
+                              animationEasing="ease-out"
+                            />
+                          </React.Fragment>
                         )
                       })}
 
