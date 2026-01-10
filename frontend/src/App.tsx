@@ -7,7 +7,7 @@ import IssueAIAnalysis from './components/IssueAIAnalysis'
 import ForecastChart from './components/ForecastChart'
 import Header from './components/Header'
 import StatsCard from './components/StatsCard'
-import ProjectSearch from './components/ProjectSearch'
+// ProjectSearch 组件已移除
 import HomePage from './components/HomePage'
 import RepoHeader from './components/RepoHeader'
 import CHAOSSEvaluation from './components/CHAOSSEvaluation'
@@ -40,14 +40,67 @@ function renderMarkdownInline(text: string): React.ReactNode {
 }
 
 function App() {
-  // 初始化时从 localStorage 恢复项目信息
-  const [currentProject, setCurrentProject] = useState<string>(() => {
-    const saved = localStorage.getItem('currentProject')
-    return saved || ''
-  })
+  // 判断是否显示首页：
+  // - 首次访问（新标签页）：显示首页，不恢复项目
+  // - 刷新页面：恢复项目状态，不显示首页
   const [showHomePage, setShowHomePage] = useState<boolean>(() => {
-    // 如果有保存的项目，初始状态就不显示首页
-    return !localStorage.getItem('currentProject')
+    // 使用 Performance API 检测页面加载类型
+    let isReload = false
+    try {
+      const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming
+      isReload = navigation?.type === 'reload'
+    } catch (e) {
+      // 兼容性处理：如果 Performance API 不可用，使用 sessionStorage
+      const hasVisited = sessionStorage.getItem('hasVisited')
+      if (!hasVisited) {
+        sessionStorage.setItem('hasVisited', 'true')
+        return true // 首次访问
+      }
+      // 刷新页面，如果有保存的项目就不显示首页
+      return !localStorage.getItem('currentProject')
+    }
+    
+    const hasVisited = sessionStorage.getItem('hasVisited')
+    
+    // 如果是刷新页面且之前访问过，恢复项目状态
+    if (isReload && hasVisited) {
+      const savedProject = localStorage.getItem('currentProject')
+      if (savedProject) {
+        return false // 刷新页面且有项目，不显示首页
+      }
+    }
+    
+    // 首次访问或没有保存的项目，显示首页
+    if (!hasVisited) {
+      sessionStorage.setItem('hasVisited', 'true')
+    }
+    return true
+  })
+  // 初始化时：如果是刷新页面且有保存的项目，恢复项目；否则不恢复
+  const [currentProject, setCurrentProject] = useState<string>(() => {
+    let isReload = false
+    try {
+      const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming
+      isReload = navigation?.type === 'reload'
+    } catch (e) {
+      // 兼容性处理
+      const hasVisited = sessionStorage.getItem('hasVisited')
+      if (hasVisited) {
+        const saved = localStorage.getItem('currentProject')
+        return saved || ''
+      }
+      return ''
+    }
+    
+    const hasVisited = sessionStorage.getItem('hasVisited')
+    
+    // 只有刷新页面且之前访问过时才恢复项目
+    if (isReload && hasVisited) {
+      const saved = localStorage.getItem('currentProject')
+      return saved || ''
+    }
+    // 首次访问，不恢复项目
+    return ''
   })
   
   const [data, setData] = useState<DemoData | null>(null)
@@ -73,12 +126,56 @@ function App() {
   
   // 文档页面状态
   const [showDocs, setShowDocs] = useState(false)
+  
+  // GitHub API 实时统计数据（当 OpenDigger 数据延迟时使用）
+  const [liveStats, setLiveStats] = useState<{
+    stars: number
+    commits: number
+    prs: number
+    contributors: number
+    month: string
+    source: string
+  } | null>(null)
+  
+  // 相似仓库推荐状态
+  interface SimilarRepo {
+    repo: string
+    full_name: string
+    description: string
+    language: string
+    topics: string[]
+    stars: number
+    openrank: number
+    similarity: number
+    reasons: string[]
+    source?: 'local' | 'github'  // 数据来源
+    primary_reason?: string
+  }
+  const [similarRepos, setSimilarRepos] = useState<SimilarRepo[]>([])
+  const [similarReposMessage, setSimilarReposMessage] = useState<string | null>(null)
+  const [loadingSimilar, setLoadingSimilar] = useState(false)
+  
 
   // 页面加载时，如果有保存的项目，恢复并加载数据
   useEffect(() => {
-    const savedProject = localStorage.getItem('currentProject')
-    if (savedProject && !isInitialized) {
-      console.log('[页面恢复] 从 localStorage 恢复项目:', savedProject)
+    if (!isInitialized) {
+      // 使用 Performance API 检测页面加载类型
+      let isReload = false
+      try {
+        const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming
+        isReload = navigation?.type === 'reload'
+      } catch (e) {
+        // 兼容性处理：如果 Performance API 不可用，使用 sessionStorage
+        console.warn('Performance API 不可用，使用 sessionStorage 判断')
+        const hasVisited = sessionStorage.getItem('hasVisited')
+        if (hasVisited) {
+          isReload = true // 假设之前访问过就是刷新
+        }
+      }
+      
+      const hasVisited = sessionStorage.getItem('hasVisited')
+      const savedProject = localStorage.getItem('currentProject')
+      
       // 恢复标签页和月份
       const savedTab = localStorage.getItem('activeTab') as 'timeseries' | 'forecast' | 'issues' | 'analysis' | null
       const savedMonth = localStorage.getItem('selectedMonth')
@@ -88,15 +185,31 @@ function App() {
       if (savedMonth) {
         setSelectedMonth(savedMonth)
       }
-      setCurrentProject(savedProject)
-      setShowHomePage(false)
-      setIsInitialized(true)
-      // 延迟加载数据，确保组件已完全初始化
-      setTimeout(() => {
-        fetchDataForProject(savedProject)
-      }, 100)
-    } else if (!savedProject) {
-      setIsInitialized(true)
+      
+      // 如果是刷新页面且之前访问过且有保存的项目，恢复项目状态
+      if (isReload && hasVisited && savedProject) {
+        console.log('[页面恢复] 刷新页面，恢复项目:', savedProject)
+        setCurrentProject(savedProject)
+        setShowHomePage(false)
+        setIsInitialized(true)
+        // 延迟加载数据，确保组件已完全初始化
+        setTimeout(() => {
+          fetchDataForProject(savedProject)
+        }, 100)
+      } else {
+        // 首次访问（新标签页），显示首页，确保清空项目数据
+        console.log('[页面初始化] 首次访问，显示首页查询界面', {
+          isReload,
+          hasVisited,
+          savedProject,
+          showHomePage
+        })
+        // 确保首次访问时清空项目数据
+        setCurrentProject('')
+        setData(null)
+        setRepoInfo(null)
+        setIsInitialized(true)
+      }
     }
   }, [isInitialized])
 
@@ -145,6 +258,7 @@ function App() {
       fetchDataForProject(projectName)
     }, 100)
   }
+  
 
   const fetchDataForProject = async (projectName: string) => {
     setLoading(true)
@@ -231,6 +345,9 @@ function App() {
         monthlyKeywords: issuesData.monthlyKeywords || {},
         projectSummary: summaryData.projectSummary || null
       })
+      
+      // 获取相似仓库推荐
+      fetchSimilarRepos(repoKey)
     } catch (err) {
       setError('无法连接到后端服务，请确保后端已启动')
       console.error('Error fetching data:', err)
@@ -238,6 +355,51 @@ function App() {
       setLoading(false)
     }
   }
+  
+  // 获取相似仓库推荐
+  const fetchSimilarRepos = async (repoKey: string) => {
+    setLoadingSimilar(true)
+    setSimilarReposMessage(null)
+    try {
+      const response = await fetch(`/api/similar/${encodeURIComponent(repoKey)}`)
+      const result = await response.json()
+      
+      if (result.similar && result.similar.length > 0) {
+        setSimilarRepos(result.similar)
+        setSimilarReposMessage(null)
+      } else {
+        setSimilarRepos([])
+        // 使用后端返回的详细消息
+        setSimilarReposMessage(result.message || '暂无相似项目推荐')
+      }
+      // 调试信息
+      if (result.diagnostics) {
+        console.log('相似仓库诊断信息:', result.diagnostics)
+      }
+    } catch (err) {
+      console.warn('获取相似仓库失败:', err)
+      setSimilarRepos([])
+      setSimilarReposMessage('获取相似仓库失败，请检查网络连接')
+    } finally {
+      setLoadingSimilar(false)
+    }
+  }
+  
+  // 点击相似仓库，跳转到首页执行搜索逻辑（触发爬取流程）
+  const handleSimilarRepoClick = (repoFullName: string) => {
+    // 解析 owner 和 repo
+    const parts = repoFullName.split('/')
+    if (parts.length === 2) {
+      const [owner, repo] = parts
+      // 保存到状态，传递给 HomePage
+      setPendingSearch({ owner, repo })
+      // 显示首页，让 HomePage 处理爬取逻辑
+      setShowHomePage(true)
+    }
+  }
+  
+  // 待搜索的仓库（点击相似仓库时设置）
+  const [pendingSearch, setPendingSearch] = useState<{ owner: string; repo: string } | null>(null)
   
   const handleCrawlText = async () => {
     if (!currentProject || crawlingText) return
@@ -273,7 +435,21 @@ function App() {
       const result = await response.json()
       
       if (result.success) {
-        setNeedsTextCrawl(false)
+        // 补爬成功后，重新检查文本数据状态
+        const parts = currentProject.includes('/') ? currentProject.split('/') : currentProject.split('_')
+        if (parts.length >= 2) {
+          try {
+            const checkResp = await fetch(`/api/check_project?owner=${encodeURIComponent(parts[0])}&repo=${encodeURIComponent(parts.slice(1).join('_'))}`)
+            const checkData = await checkResp.json()
+            setNeedsTextCrawl(checkData.needsTextCrawl || false)
+            console.log('[补爬完成] 重新检查文本数据状态:', { needsTextCrawl: checkData.needsTextCrawl, hasText: checkData.hasText })
+          } catch (e) {
+            console.warn('补爬后检查文本数据失败:', e)
+            setNeedsTextCrawl(false)  // 如果检查失败，假设已成功
+          }
+        } else {
+          setNeedsTextCrawl(false)
+        }
         // 重新加载数据
         await fetchDataForProject(currentProject)
       } else {
@@ -302,7 +478,17 @@ function App() {
   // 从分组数据中提取统计信息
   const getStats = () => {
     if (!data?.groupedTimeseries?.groups) {
-      return { stars: 0, commits: 0, prs: 0, contributors: 0 }
+      // 如果没有 OpenDigger 数据，使用 GitHub API 实时数据
+      if (liveStats) {
+        return {
+          stars: liveStats.stars,
+          commits: liveStats.commits,
+          prs: liveStats.prs,
+          contributors: liveStats.contributors,
+          source: 'github_api'
+        }
+      }
+      return { stars: 0, commits: 0, prs: 0, contributors: 0, source: 'none' }
     }
     
     const groups = data.groupedTimeseries.groups
@@ -328,25 +514,103 @@ function App() {
       return 0
     }
     
-    return {
+    const opendiggerStats = {
       stars: getLatestValue('popularity', 'star'),
       commits: getLatestValue('development', '提交'),
       prs: getLatestValue('development', 'pr接受'),
-      contributors: getLatestValue('contributors', '参与者')
+      contributors: getLatestValue('contributors', '参与者'),
+      source: 'opendigger'
     }
+    
+    // 如果 OpenDigger 数据全为 0，使用 GitHub API 实时数据
+    const allZero = opendiggerStats.stars === 0 && opendiggerStats.commits === 0 && 
+                    opendiggerStats.prs === 0 && opendiggerStats.contributors === 0
+    
+    if (allZero && liveStats) {
+      return {
+        stars: liveStats.stars,
+        commits: liveStats.commits,
+        prs: liveStats.prs,
+        contributors: liveStats.contributors,
+        source: 'github_api'
+      }
+    }
+    
+    return opendiggerStats
   }
 
   const stats = getStats()
+  
+  // 当数据加载完成但统计为空时，获取 GitHub API 实时数据
+  useEffect(() => {
+    const fetchLiveStats = async () => {
+      if (!currentProject || !data) return
+      
+      // 检查是否需要获取实时数据
+      const groups = data?.groupedTimeseries?.groups
+      if (!groups) return
+      
+      const getLatestValue = (groupKey: string, metricKey: string) => {
+        const group = groups[groupKey]
+        if (!group?.metrics) return 0
+        const metric = Object.entries(group.metrics).find(([key]) => 
+          key.toLowerCase().includes(metricKey.toLowerCase())
+        )
+        if (!metric?.[1]?.data) return 0
+        const arr = metric[1].data
+        for (let i = arr.length - 1; i >= 0; i--) {
+          if (arr[i] !== null && arr[i] !== undefined) return arr[i] as number
+        }
+        return 0
+      }
+      
+      const currentStats = {
+        stars: getLatestValue('popularity', 'star'),
+        commits: getLatestValue('development', '提交'),
+        prs: getLatestValue('development', 'pr接受'),
+        contributors: getLatestValue('contributors', '参与者')
+      }
+      
+      // 如果所有统计都为 0，获取实时数据
+      if (currentStats.stars === 0 && currentStats.commits === 0 && 
+          currentStats.prs === 0 && currentStats.contributors === 0) {
+        try {
+          console.log('[Live Stats] OpenDigger 数据为空，正在获取 GitHub API 实时数据...')
+          const response = await fetch(`/api/repo/${encodeURIComponent(currentProject)}/live-stats`)
+          const result = await response.json()
+          if (result.success && result.stats) {
+            console.log('[Live Stats] 获取成功:', result.stats)
+            setLiveStats(result.stats)
+          }
+        } catch (error) {
+          console.error('[Live Stats] 获取失败:', error)
+        }
+      }
+    }
+    
+    fetchLiveStats()
+  }, [currentProject, data])
 
-  // 显示首页（只有在没有项目且已初始化时才显示）
+  // 显示首页（优先检查，如果显示首页就直接返回）
   if (showHomePage && isInitialized) {
     return <HomePage 
-      onProjectReady={handleProjectReady} 
+      onProjectReady={(projectName) => {
+        // 清除待搜索状态
+        setPendingSearch(null)
+        handleProjectReady(projectName)
+      }} 
       onProgressUpdate={(progress) => {
         setCrawlProgress(progress)
         setIsCrawling(progress.progress < 100)
       }}
+      initialOwner={pendingSearch?.owner || ''}
+      initialRepo={pendingSearch?.repo || ''}
     />
+  }
+  
+  // 如果正在初始化且有项目，显示加载状态
+  if (!isInitialized && currentProject) {
+    return <LoadingScreen />
   }
   
   // 如果正在初始化且有项目，显示加载状态
@@ -485,16 +749,6 @@ function App() {
         {/* 仓库信息头部 */}
         {repoInfo && <RepoHeader repoInfo={repoInfo} />}
         
-        <motion.div 
-          className="mb-8"
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
-          <ProjectSearch 
-            onSelectProject={handleProjectSelect}
-            currentProject={currentProject}
-          />
-        </motion.div>
 
         {/* 数据信息 */}
         {data?.groupedTimeseries && (
@@ -511,6 +765,9 @@ function App() {
                 <p className="text-sm text-cyber-muted font-chinese">
                   真实数据 · {data.groupedTimeseries.startMonth} 至 {data.groupedTimeseries.endMonth}
                   · {data.groupedTimeseries.timeAxis.length} 个月
+                  <span className="ml-2 text-xs text-cyber-muted/60" title="OpenDigger 数据源通常有 1-2 个月的处理延迟">
+                    (数据源延迟约1-2月)
+                  </span>
                 </p>
               </div>
               <button
@@ -534,13 +791,20 @@ function App() {
           {/* 当月数据提示 */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-cyber-primary rounded-full animate-pulse" />
+              <div className={`w-2 h-2 rounded-full animate-pulse ${stats.source === 'github_api' ? 'bg-green-400' : 'bg-cyber-primary'}`} />
               <span className="text-sm text-cyber-muted font-chinese">
-                最新月度数据（{data?.groupedTimeseries?.endMonth || '加载中'}）
+                最新月度数据（{liveStats?.month || data?.groupedTimeseries?.endMonth || '加载中'}）
+                {stats.source === 'github_api' && (
+                  <span className="ml-2 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">
+                    实时 · GitHub API
+                  </span>
+                )}
               </span>
             </div>
             <span className="text-xs text-cyber-muted/70 font-chinese">
-              以下为当月指标数值，点击图表查看完整趋势
+              {stats.source === 'github_api' 
+                ? 'OpenDigger 数据延迟，已切换为 GitHub API 实时数据' 
+                : '以下为当月指标数值，点击图表查看完整趋势'}
             </span>
           </div>
           
@@ -687,6 +951,84 @@ function App() {
                         return null
                       })}
                     </div>
+                    
+                    {/* 相似仓库推荐 */}
+                    <div className="mt-6 pt-4 border-t border-cyber-border/30">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Sparkles className="w-4 h-4 text-cyber-secondary" />
+                        <h4 className="text-sm font-display font-bold text-cyber-text">相似项目推荐</h4>
+                        {loadingSimilar && (
+                          <Loader2 className="w-3 h-3 text-cyber-muted animate-spin" />
+                        )}
+                      </div>
+                      
+                      {similarRepos.length > 0 ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                          {similarRepos.slice(0, 5).map((repo, idx) => (
+                            <motion.button
+                              key={repo.repo}
+                              onClick={() => handleSimilarRepoClick(repo.full_name)}
+                              className="text-left p-3 bg-cyber-bg/40 hover:bg-cyber-primary/10 rounded-lg border border-cyber-border/30 hover:border-cyber-primary/50 transition-all group"
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: idx * 0.1 }}
+                            >
+                              <div className="flex items-start justify-between mb-1">
+                                <span className="text-sm font-medium text-cyber-primary group-hover:text-cyber-secondary transition-colors">
+                                  {repo.full_name}
+                                </span>
+                                <div className="flex items-center gap-1">
+                                  {repo.source === 'github' && (
+                                    <span className="text-xs bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded">
+                                      GitHub
+                                    </span>
+                                  )}
+                                  {repo.openrank > 0 && (
+                                    <span className="text-xs bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded">
+                                      OR: {repo.openrank.toFixed(2)}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              
+                              {repo.description && (
+                                <p className="text-xs text-cyber-muted mb-2 line-clamp-2">
+                                  {repo.description}
+                                </p>
+                              )}
+                              
+                              <div className="flex flex-wrap gap-1 mb-2">
+                                {repo.language && (
+                                  <span className="text-xs bg-cyber-secondary/20 text-cyber-secondary px-1.5 py-0.5 rounded">
+                                    {repo.language}
+                                  </span>
+                                )}
+                                {repo.topics.slice(0, 2).map(topic => (
+                                  <span key={topic} className="text-xs bg-cyber-primary/10 text-cyber-primary/70 px-1.5 py-0.5 rounded">
+                                    {topic}
+                                  </span>
+                                ))}
+                              </div>
+                              
+                              {repo.reasons.length > 0 && (
+                                <p className="text-xs text-cyber-muted/70 italic">
+                                  {repo.reasons[0]}
+                                </p>
+                              )}
+                              
+                              <div className="mt-2 text-xs text-cyber-primary/50 flex items-center gap-1 group-hover:text-cyber-primary transition-colors">
+                                <span>点击查看分析</span>
+                                <span className="group-hover:translate-x-1 transition-transform">→</span>
+                              </div>
+                            </motion.button>
+                          ))}
+                        </div>
+                      ) : !loadingSimilar ? (
+                        <p className="text-xs text-cyber-muted/70 font-chinese">
+                          {similarReposMessage || '暂无相似项目推荐。需要更多已分析的项目才能进行匹配。'}
+                        </p>
+                      ) : null}
+                    </div>
                   </div>
                 </motion.div>
               )}
@@ -762,6 +1104,7 @@ function App() {
                     ...group.metrics
                   }), {}) : undefined
                 }
+                timeAxis={data.groupedTimeseries?.timeAxis}
               />
             </motion.div>
           )}

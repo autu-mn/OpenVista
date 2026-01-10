@@ -642,8 +642,17 @@ class MonthlyDataProcessor:
         
         return maxkb_dir
     
-    def upload_to_maxkb(self, maxkb_dir: str, owner: str, repo: str):
-        """上传描述文本到MaxKB知识库"""
+    def upload_to_maxkb(self, maxkb_dir: str, owner: str, repo: str, output_dir: str = None):
+        """
+        上传描述文本到MaxKB知识库
+        包括：README、LICENSE、文档文件、项目摘要、Issue数据
+        
+        Args:
+            maxkb_dir: MaxKB文本目录
+            owner: 仓库所有者
+            repo: 仓库名称
+            output_dir: 输出目录（用于查找项目摘要和Issue数据）
+        """
         try:
             from backend.DataProcessor.maxkb_uploader import MaxKBUploader
         except ImportError:
@@ -716,6 +725,137 @@ class MonthlyDataProcessor:
                 print(f"      ✓ 成功上传 {uploaded_count} 个文档")
                 if failed_count > 0:
                     print(f"      ⚠ 失败 {failed_count} 个文档")
+            
+            # 上传项目摘要
+            if output_dir:
+                project_summary_path = os.path.join(output_dir, 'timeseries_for_model', 'project_summary.json')
+                if os.path.exists(project_summary_path):
+                    print(f"    - 上传项目摘要...")
+                    try:
+                        # 读取项目摘要JSON，转换为Markdown格式
+                        with open(project_summary_path, 'r', encoding='utf-8') as f:
+                            summary_data = json.load(f)
+                        
+                        # 提取AI摘要
+                        ai_summary = summary_data.get('ai_summary', '')
+                        repo_info = summary_data.get('repo_info', {})
+                        date_range = summary_data.get('date_range', {})
+                        total_months = summary_data.get('total_months', 0)
+                        
+                        # 构建Markdown格式的项目摘要文档
+                        summary_md = f"""# {owner}/{repo} - 项目摘要
+
+## 项目基本信息
+- **项目名称**: {repo_info.get('full_name', f'{owner}/{repo}')}
+- **描述**: {repo_info.get('description', '无')}
+- **主要语言**: {repo_info.get('language', '未知')}
+- **Star数**: {repo_info.get('stargazers_count', 0)}
+- **Fork数**: {repo_info.get('forks_count', 0)}
+- **数据时间范围**: {date_range.get('start', '未知')} 至 {date_range.get('end', '未知')}
+- **数据月份数**: {total_months} 个月
+
+## AI生成的项目摘要
+
+{ai_summary}
+
+---
+*此摘要由OpenVista平台自动生成*
+"""
+                        
+                        # 保存为临时文件并上传
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.md', delete=False) as tmp_file:
+                            tmp_file.write(summary_md)
+                            tmp_path = tmp_file.name
+                        
+                        if uploader.upload_document(tmp_path, chunk_size=500, document_name=f"{owner}/{repo} - 项目摘要"):
+                            print(f"      ✓ 项目摘要上传成功")
+                        else:
+                            print(f"      ✗ 项目摘要上传失败")
+                        
+                        # 删除临时文件
+                        try:
+                            os.unlink(tmp_path)
+                        except:
+                            pass
+                    except Exception as e:
+                        print(f"      ✗ 项目摘要处理失败: {str(e)}")
+            
+            # 上传Issue数据（汇总）
+            if output_dir:
+                timeseries_dir = os.path.join(output_dir, 'timeseries_for_model')
+                if os.path.exists(timeseries_dir):
+                    print(f"    - 收集并上传Issue数据...")
+                    try:
+                        # 收集所有月份的Issue数据
+                        all_issues = []
+                        all_months_file = os.path.join(timeseries_dir, 'all_months.json')
+                        
+                        if os.path.exists(all_months_file):
+                            with open(all_months_file, 'r', encoding='utf-8') as f:
+                                all_months_data = json.load(f)
+                            
+                            # 提取所有Issue
+                            for month, month_data in all_months_data.items():
+                                text_data = month_data.get('text_data', {})
+                                breakdown = text_data.get('breakdown', {})
+                                issues_text = breakdown.get('issues_text', '')
+                                
+                                if issues_text:
+                                    all_issues.append(f"## {month} 的 Issues\n\n{issues_text}\n\n---\n\n")
+                        else:
+                            # 如果没有all_months.json，从单个文件收集
+                            json_files = [f for f in os.listdir(timeseries_dir) if f.endswith('.json') and f != 'project_summary.json']
+                            for json_file in sorted(json_files):
+                                month_file = os.path.join(timeseries_dir, json_file)
+                                try:
+                                    with open(month_file, 'r', encoding='utf-8') as f:
+                                        month_data = json.load(f)
+                                    
+                                    text_data = month_data.get('text_data', {})
+                                    breakdown = text_data.get('breakdown', {})
+                                    issues_text = breakdown.get('issues_text', '')
+                                    
+                                    if issues_text:
+                                        month_name = json_file.replace('.json', '')
+                                        all_issues.append(f"## {month_name} 的 Issues\n\n{issues_text}\n\n---\n\n")
+                                except Exception as e:
+                                    continue
+                        
+                        if all_issues:
+                            # 构建Issue汇总文档
+                            issues_md = f"""# {owner}/{repo} - Issue数据汇总
+
+本文档包含项目所有月份的Issue数据，按时间顺序排列。
+
+{''.join(all_issues[:50])}  # 限制最多50个月，避免文档过大
+
+---
+*此数据由OpenVista平台自动收集*
+"""
+                            
+                            # 保存为临时文件并上传
+                            import tempfile
+                            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.md', delete=False) as tmp_file:
+                                tmp_file.write(issues_md)
+                                tmp_path = tmp_file.name
+                            
+                            if uploader.upload_document(tmp_path, chunk_size=500, document_name=f"{owner}/{repo} - Issue数据汇总"):
+                                print(f"      ✓ Issue数据上传成功（共 {len(all_issues)} 个月）")
+                            else:
+                                print(f"      ✗ Issue数据上传失败")
+                            
+                            # 删除临时文件
+                            try:
+                                os.unlink(tmp_path)
+                            except:
+                                pass
+                        else:
+                            print(f"      ℹ 未找到Issue数据")
+                    except Exception as e:
+                        print(f"      ✗ Issue数据处理失败: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
             
             print("  ✓ MaxKB上传完成")
             

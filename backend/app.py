@@ -160,6 +160,116 @@ def get_repo_summary(repo_key):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/repo/<path:repo_key>/live-stats', methods=['GET'])
+def get_live_stats(repo_key):
+    """
+    使用 GitHub Token 获取仓库的实时统计数据
+    当 OpenDigger 数据延迟时，作为补充数据源
+    返回: stars, commits, prs, contributors (当月)
+    """
+    try:
+        # 标准化 repo_key
+        if '_' in repo_key and '/' not in repo_key:
+            parts = repo_key.split('_', 1)
+            owner, repo = parts[0], parts[1]
+        else:
+            parts = repo_key.split('/')
+            owner, repo = parts[0], parts[1]
+        
+        from DataProcessor.github_api_metrics import GitHubAPIMetrics
+        from datetime import datetime
+        import requests
+        import os
+        
+        # 获取 Token
+        token = os.getenv('GITHUB_TOKEN')
+        if not token:
+            return jsonify({'error': 'GitHub Token 未配置', 'stats': None}), 400
+        
+        headers = {
+            'Authorization': f'token {token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        base_url = 'https://api.github.com'
+        current_month = datetime.now().strftime('%Y-%m')
+        
+        stats = {
+            'month': current_month,
+            'stars': 0,
+            'commits': 0,
+            'prs': 0,
+            'contributors': 0,
+            'source': 'github_api'
+        }
+        
+        # 1. 获取仓库基本信息 (stars, forks)
+        try:
+            repo_response = requests.get(
+                f'{base_url}/repos/{owner}/{repo}',
+                headers=headers, timeout=10
+            )
+            if repo_response.status_code == 200:
+                repo_data = repo_response.json()
+                stats['stars'] = repo_data.get('stargazers_count', 0)
+                stats['forks'] = repo_data.get('forks_count', 0)
+        except Exception as e:
+            logger.warning(f"获取仓库信息失败: {e}")
+        
+        # 2. 获取当月提交数
+        try:
+            since_date = f"{current_month}-01T00:00:00Z"
+            commits_response = requests.get(
+                f'{base_url}/repos/{owner}/{repo}/commits',
+                headers=headers,
+                params={'since': since_date, 'per_page': 100},
+                timeout=15
+            )
+            if commits_response.status_code == 200:
+                commits = commits_response.json()
+                stats['commits'] = len(commits)
+                
+                # 统计当月贡献者
+                contributors_set = set()
+                for commit in commits:
+                    author = commit.get('author')
+                    if author and author.get('login'):
+                        contributors_set.add(author['login'])
+                stats['contributors'] = len(contributors_set)
+        except Exception as e:
+            logger.warning(f"获取提交信息失败: {e}")
+        
+        # 3. 获取当月合并的 PR 数
+        try:
+            prs_response = requests.get(
+                f'{base_url}/repos/{owner}/{repo}/pulls',
+                headers=headers,
+                params={'state': 'closed', 'sort': 'updated', 'direction': 'desc', 'per_page': 100},
+                timeout=15
+            )
+            if prs_response.status_code == 200:
+                prs = prs_response.json()
+                merged_count = 0
+                for pr in prs:
+                    merged_at = pr.get('merged_at')
+                    if merged_at and merged_at.startswith(current_month):
+                        merged_count += 1
+                stats['prs'] = merged_count
+        except Exception as e:
+            logger.warning(f"获取 PR 信息失败: {e}")
+        
+        logger.info(f"[Live Stats] {owner}/{repo} - Stars: {stats['stars']}, Commits: {stats['commits']}, PRs: {stats['prs']}, Contributors: {stats['contributors']}")
+        
+        return jsonify({
+            'success': True,
+            'stats': stats
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'stats': None}), 500
+
+
 @app.route('/api/load', methods=['POST'])
 def load_data():
     """加载数据文件"""
@@ -377,6 +487,77 @@ def get_forecast_status():
         })
 
 
+@app.route('/api/forecast/<path:repo_key>/explain', methods=['POST'])
+def get_forecast_explanation(repo_key):
+    """
+    获取预测的 AI 可解释性分析
+    输入: metric_name, historical_data, forecast_data, confidence
+    输出: 预测依据、关键事件、风险提示、驱动因素、建议
+    """
+    try:
+        data = request.json or {}
+        metric_name = data.get('metric_name', 'OpenRank')
+        historical_data = data.get('historical_data', {})
+        forecast_data = data.get('forecast_data', {})
+        confidence = data.get('confidence', 0.75)
+        
+        if not historical_data or not forecast_data:
+            return jsonify({
+                'error': '缺少历史数据或预测数据',
+                'explanation': None
+            }), 400
+        
+        # 标准化 repo_key
+        if '_' in repo_key and '/' not in repo_key:
+            repo_key = repo_key.replace('_', '/')
+        
+        # 获取仓库上下文
+        repo_context = None
+        issue_stats = None
+        
+        try:
+            actual_key = data_service._normalize_repo_key(repo_key)
+            summary = data_service.get_repo_summary(actual_key)
+            repo_info = summary.get('repoInfo', {})
+            if repo_info:
+                repo_context = {
+                    'name': repo_info.get('full_name', repo_key),
+                    'description': repo_info.get('description', ''),
+                    'language': repo_info.get('language', ''),
+                    'stars': repo_info.get('stars', 0)
+                }
+            
+            # 获取 Issue 统计
+            project_summary = summary.get('projectSummary', {})
+            if project_summary:
+                issue_stats = project_summary.get('issueStats', {})
+        except Exception as e:
+            logger.warning(f"获取仓库上下文失败: {e}")
+        
+        # 生成解释
+        explanation = prediction_explainer.generate_explanation(
+            metric_name=metric_name,
+            historical_data=historical_data,
+            forecast_data=forecast_data,
+            confidence=confidence,
+            repo_context=repo_context,
+            issue_stats=issue_stats
+        )
+        
+        return jsonify({
+            'metric_name': metric_name,
+            'explanation': explanation
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': str(e),
+            'explanation': None
+        }), 500
+
+
 @app.route('/api/analysis/<path:repo_key>', methods=['GET'])
 def get_wave_analysis(repo_key):
     """
@@ -494,6 +675,496 @@ def get_events(repo_key):
 def get_demo_data():
     """获取演示数据 - 优先使用真实数据"""
     return jsonify(data_service.get_demo_data())
+
+
+def _search_github_similar_enhanced(topics, language, stars, exclude_keys, description='', max_results=5, ai_summary=''):
+    """
+    增强版 GitHub API 搜索相似仓库
+    优先级：1. 主题/功能相似 > 2. 描述关键词相似 > 3. 技术栈相似
+    
+    核心原则：
+    - 不同项目应该推荐不同的相似仓库
+    - 主题和功能相似是最重要的匹配维度
+    - 技术栈相似只是辅助因素
+    """
+    import requests
+    import os
+    import re
+    
+    github_token = os.getenv('GITHUB_TOKEN')
+    if not github_token:
+        logger.warning("GITHUB_TOKEN 未配置，无法搜索相似仓库")
+        return []
+    
+    headers = {
+        'Authorization': f'token {github_token}',
+        'Accept': 'application/vnd.github.v3+json'
+    }
+    
+    results = []
+    seen_repos = set(exclude_keys)
+    
+    # ========== 提取功能关键词 ==========
+    # 从 AI 摘要和描述中提取真正描述功能的关键词
+    functional_keywords = set()
+    
+    # 从描述中提取
+    if description:
+        # 过滤掉通用词，保留功能性描述词
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'for', 'with', 'your', 'in', 'of', 'to', 
+                      'is', 'it', 'this', 'that', 'are', 'be', 'as', 'at', 'by', 'from',
+                      'state', 'art', 'based', 'using', 'new', 'best', 'most', 'all', 'any'}
+        desc_words = re.findall(r'\b[a-zA-Z]{4,}\b', description.lower())
+        functional_keywords.update([w for w in desc_words if w not in stop_words][:10])
+    
+    # 从 AI 摘要提取功能关键词
+    if ai_summary:
+        # 提取可能描述功能的短语
+        func_patterns = [
+            r'用于([^，。,\.]+)',
+            r'提供([^，。,\.]+)',
+            r'支持([^，。,\.]+)',
+            r'实现([^，。,\.]+)',
+            r'专注于([^，。,\.]+)',
+        ]
+        for pattern in func_patterns:
+            matches = re.findall(pattern, ai_summary)
+            for match in matches[:3]:
+                words = re.findall(r'[a-zA-Z]{3,}', match.lower())
+                functional_keywords.update(words[:3])
+    
+    logger.info(f"[Similar] Topics: {list(topics)[:5]}, Keywords: {list(functional_keywords)[:5]}")
+    
+    # ========== 策略1：按核心主题搜索（最高优先级）==========
+    # 选择最具特征性的主题进行搜索
+    if topics:
+        # 排除过于通用的主题
+        generic_topics = {'python', 'javascript', 'typescript', 'java', 'go', 'rust', 'c', 
+                          'hacktoberfest', 'awesome', 'list', 'tool', 'library', 'framework'}
+        specific_topics = [t for t in topics if t.lower() not in generic_topics and len(t) > 2]
+        
+        # 如果没有特定主题，使用所有主题
+        if not specific_topics:
+            specific_topics = [t for t in topics if len(t) > 2][:5]
+        
+        for topic in specific_topics[:3]:
+            if len(results) >= max_results:
+                break
+            try:
+                # 搜索同主题的项目，不限制语言（功能相似更重要）
+                query = f'topic:{topic}'
+                if stars > 100:
+                    query += f' stars:>{max(50, stars//10)}'
+                
+                response = requests.get(
+                    'https://api.github.com/search/repositories',
+                    headers=headers,
+                    params={'q': query, 'sort': 'stars', 'order': 'desc', 'per_page': 15},
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    items = response.json().get('items', [])
+                    for item in items:
+                        full_name = item.get('full_name', '')
+                        if full_name in seen_repos or full_name.replace('/', '_') in seen_repos:
+                            continue
+                        if len(results) >= max_results:
+                            break
+                        
+                        repo_topics = set(item.get('topics', []))
+                        common_topics = topics & repo_topics
+                        
+                        # 计算主题相似度分数
+                        topic_similarity = len(common_topics) / max(len(topics), 1) * 100
+                        
+                        reasons = []
+                        if common_topics:
+                            reasons.append(f"功能相似: {', '.join(list(common_topics)[:3])}")
+                        
+                        # 检查描述相似性
+                        item_desc = (item.get('description', '') or '').lower()
+                        desc_match = sum(1 for kw in functional_keywords if kw in item_desc)
+                        if desc_match > 0:
+                            reasons.append(f"描述匹配 {desc_match} 个关键词")
+                            topic_similarity += desc_match * 5
+                        
+                        # 同语言加分但不是主要因素
+                        if item.get('language', '') == language:
+                            reasons.append(f"同为 {language}")
+                            topic_similarity += 5
+                        
+                        if not reasons:
+                            reasons.append(f"相关 {topic} 项目")
+                        
+                        results.append({
+                            'repo': full_name,
+                            'full_name': full_name,
+                            'description': (item.get('description', '') or '')[:150],
+                            'language': item.get('language', ''),
+                            'topics': list(repo_topics)[:5],
+                            'stars': item.get('stargazers_count', 0),
+                            'openrank': 0,
+                            'similarity': min(95, topic_similarity),
+                            'reasons': reasons,
+                            'primary_reason': reasons[0] if reasons else f'{topic} 相关',
+                            'source': 'github'
+                        })
+                        seen_repos.add(full_name)
+                        
+            except Exception as e:
+                logger.warning(f"主题搜索失败 ({topic}): {e}")
+    
+    # ========== 策略2：按功能描述关键词搜索 ==========
+    if len(results) < max_results and functional_keywords:
+        try:
+            # 使用功能关键词搜索
+            search_keywords = list(functional_keywords)[:4]
+            query = ' '.join(search_keywords)
+            if language:
+                query += f' language:{language}'
+            if stars > 500:
+                query += ' stars:>100'
+            
+            response = requests.get(
+                'https://api.github.com/search/repositories',
+                headers=headers,
+                params={'q': query, 'sort': 'stars', 'order': 'desc', 'per_page': 10},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                items = response.json().get('items', [])
+                for item in items:
+                    full_name = item.get('full_name', '')
+                    if full_name in seen_repos:
+                        continue
+                    if len(results) >= max_results:
+                        break
+                    
+                    item_desc = (item.get('description', '') or '').lower()
+                    desc_match = sum(1 for kw in functional_keywords if kw in item_desc)
+                    
+                    reasons = [f'功能相似: 描述匹配 {desc_match} 个关键词']
+                    if item.get('language', '') == language:
+                        reasons.append(f'技术栈: {language}')
+                    
+                    results.append({
+                        'repo': full_name,
+                        'full_name': full_name,
+                        'description': (item.get('description', '') or '')[:150],
+                        'language': item.get('language', ''),
+                        'topics': item.get('topics', [])[:5],
+                        'stars': item.get('stargazers_count', 0),
+                        'openrank': 0,
+                        'similarity': 40 + desc_match * 10,
+                        'reasons': reasons,
+                        'primary_reason': reasons[0],
+                        'source': 'github'
+                    })
+                    seen_repos.add(full_name)
+                    
+        except Exception as e:
+            logger.warning(f"关键词搜索失败: {e}")
+    
+    # ========== 策略3：按语言+规模搜索（最低优先级）==========
+    # 只有在前两种策略结果不足时才使用
+    if len(results) < 3 and language:
+        try:
+            query = f'language:{language}'
+            if stars > 5000:
+                query += f' stars:{stars//10}..{stars*2}'
+            elif stars > 500:
+                query += f' stars:{max(100, stars//5)}..{stars*5}'
+            else:
+                query += ' stars:>50'
+            
+            response = requests.get(
+                'https://api.github.com/search/repositories',
+                headers=headers,
+                params={'q': query, 'sort': 'updated', 'order': 'desc', 'per_page': 10},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                items = response.json().get('items', [])
+                for item in items:
+                    full_name = item.get('full_name', '')
+                    if full_name in seen_repos:
+                        continue
+                    if len(results) >= max_results:
+                        break
+                    
+                    results.append({
+                        'repo': full_name,
+                        'full_name': full_name,
+                        'description': (item.get('description', '') or '')[:150],
+                        'language': item.get('language', ''),
+                        'topics': item.get('topics', [])[:5],
+                        'stars': item.get('stargazers_count', 0),
+                        'openrank': 0,
+                        'similarity': 30,
+                        'reasons': [f'同为 {language} 项目', f'相近规模 ({item.get("stargazers_count", 0):,} stars)'],
+                        'primary_reason': f'{language} 生态项目',
+                        'source': 'github'
+                    })
+                    seen_repos.add(full_name)
+                    
+        except Exception as e:
+            logger.warning(f"语言搜索失败: {e}")
+    
+    # 按相似度排序，相似度相同时按 stars 排序
+    results.sort(key=lambda x: (x['similarity'], x['stars']), reverse=True)
+    return results[:max_results]
+
+
+def _search_github_similar(topics, language, stars, exclude_keys, existing_repos, max_results=5):
+    """
+    通过 GitHub API 搜索相似仓库（旧版本，保留兼容）
+    """
+    import requests
+    import os
+    
+    github_token = os.getenv('GITHUB_TOKEN')
+    if not github_token:
+        return []
+    
+    headers = {
+        'Authorization': f'token {github_token}',
+        'Accept': 'application/vnd.github.v3+json'
+    }
+    
+    # 构建搜索查询
+    query_parts = []
+    
+    # 添加主题搜索
+    if topics:
+        topic_list = list(topics)[:3]  # 最多使用3个主题
+        for topic in topic_list:
+            query_parts.append(f'topic:{topic}')
+    
+    # 添加语言过滤
+    if language:
+        query_parts.append(f'language:{language}')
+    
+    # 添加星数范围（相似规模）
+    if stars > 1000:
+        query_parts.append(f'stars:>{stars//10}')
+    elif stars > 100:
+        query_parts.append(f'stars:>50')
+    
+    if not query_parts:
+        return []
+    
+    query = ' '.join(query_parts)
+    
+    try:
+        url = 'https://api.github.com/search/repositories'
+        params = {
+            'q': query,
+            'sort': 'stars',
+            'order': 'desc',
+            'per_page': 10
+        }
+        
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        
+        if response.status_code != 200:
+            logger.warning(f"GitHub API 返回状态码: {response.status_code}")
+            return []
+        
+        data = response.json()
+        items = data.get('items', [])
+        
+        results = []
+        for item in items:
+            full_name = item.get('full_name', '')
+            
+            # 排除已存在的和自己
+            if full_name in exclude_keys or full_name.replace('/', '_') in exclude_keys:
+                continue
+            if full_name in existing_repos or full_name.replace('/', '_') in existing_repos:
+                continue
+            
+            repo_topics = item.get('topics', [])
+            repo_language = item.get('language', '')
+            repo_stars = item.get('stargazers_count', 0)
+            
+            # 计算相似度
+            reasons = []
+            similarity = 0
+            
+            if topics and repo_topics:
+                common = set(topics) & set(repo_topics)
+                if common:
+                    similarity += min(len(common) * 10, 30)
+                    reasons.append(f"主题相似: {', '.join(list(common)[:2])}")
+            
+            if language and repo_language and language.lower() == repo_language.lower():
+                similarity += 25
+                reasons.append(f"技术栈相同: {repo_language}")
+            
+            if not reasons:
+                continue
+            
+            results.append({
+                'repo': full_name,
+                'full_name': full_name,
+                'description': (item.get('description', '') or '')[:120],
+                'language': repo_language,
+                'topics': repo_topics[:5],
+                'stars': repo_stars,
+                'openrank': 0,  # GitHub API 没有 OpenRank
+                'similarity': similarity,
+                'reasons': reasons,
+                'primary_reason': '来自 GitHub 推荐',
+                'breakdown': {},
+                'source': 'github'  # 标记来源
+            })
+            
+            if len(results) >= max_results:
+                break
+        
+        return results
+        
+    except Exception as e:
+        logger.warning(f"GitHub 搜索失败: {e}")
+        return []
+
+
+@app.route('/api/similar/<path:repo_key>', methods=['GET'])
+def get_similar_repos(repo_key):
+    """
+    获取相似仓库推荐
+    多维度相似性评估：主题相似、技术栈相似、规模相似、活跃度相似
+    返回 3-5 个最相似的仓库，每个都有充分的理由
+    """
+    try:
+        # 标准化 repo_key
+        if '_' in repo_key and '/' not in repo_key:
+            repo_key = repo_key.replace('_', '/')
+        
+        actual_key = data_service._normalize_repo_key(repo_key)
+        # 获取所有可能的 key 变体用于排除自己
+        self_keys = {
+            repo_key, 
+            actual_key, 
+            repo_key.replace('/', '_'), 
+            actual_key.replace('/', '_'),
+            repo_key.replace('_', '/'),
+            actual_key.replace('_', '/')
+        }
+        
+        # 获取当前仓库的信息
+        current_summary = data_service.get_repo_summary(actual_key)
+        current_repo_info = current_summary.get('repoInfo', {})
+        current_topics = set(current_repo_info.get('topics', []))
+        current_language = current_repo_info.get('language', '')
+        current_stars = current_repo_info.get('stars', 0)
+        
+        # 获取当前仓库的 OpenRank
+        current_openrank = 0
+        for key_variant in [actual_key, actual_key.replace('/', '_')]:
+            if key_variant in data_service.loaded_timeseries:
+                ts_data = data_service.loaded_timeseries[key_variant]
+                for metric_name, metric_data in ts_data.items():
+                    if 'openrank' in metric_name.lower():
+                        if isinstance(metric_data, dict):
+                            values = [v for v in metric_data.values() if isinstance(v, (int, float)) and v > 0]
+                            if values:
+                                current_openrank = values[-1]
+                        break
+                break
+        
+        # 从 AI 摘要中提取关键词（即使没有 topics 也能匹配）
+        current_keywords = set()
+        project_summary = current_summary.get('projectSummary') or {}
+        ai_summary = project_summary.get('aiSummary', '') or ''
+        
+        # 提取技术关键词
+        tech_keywords = [
+            'python', 'javascript', 'typescript', 'java', 'c++', 'rust', 'go', 'swift',
+            'react', 'vue', 'angular', 'node', 'django', 'flask', 'spring', 'rails',
+            'machine learning', 'deep learning', 'ai', 'ml', 'nlp', 'computer vision',
+            'database', 'api', 'web', 'mobile', 'cloud', 'docker', 'kubernetes',
+            'tensorflow', 'pytorch', 'transformer', 'neural', 'backend', 'frontend',
+            '框架', '库', '工具', '平台', '系统', '引擎', '服务'
+        ]
+        
+        ai_summary_lower = ai_summary.lower()
+        for kw in tech_keywords:
+            if kw in ai_summary_lower:
+                current_keywords.add(kw)
+        
+        # 合并 topics 和关键词
+        current_topics = current_topics | current_keywords
+        
+        # 获取仓库名称关键词
+        repo_name = current_repo_info.get('name', '') or repo_key.split('/')[-1]
+        name_parts = repo_name.lower().replace('-', ' ').replace('_', ' ').split()
+        current_keywords.update(name_parts)
+        
+        # ====== 完全使用 GitHub API 搜索，忽略本地数据 ======
+        search_terms = current_topics | current_keywords
+        
+        # 直接从 GitHub 搜索相似仓库
+        try:
+            similar_repos = _search_github_similar_enhanced(
+                topics=search_terms,
+                language=current_language,
+                stars=current_stars,
+                exclude_keys=self_keys,
+                description=current_repo_info.get('description', ''),
+                max_results=5,
+                ai_summary=ai_summary
+            )
+            
+            if not similar_repos:
+                return jsonify({
+                    'current': {
+                        'repo': repo_key,
+                        'topics': list(current_topics),
+                        'language': current_language,
+                        'stars': current_stars,
+                        'openrank': round(current_openrank, 2)
+                    },
+                    'similar': [],
+                    'message': '未找到相似仓库，请检查 GITHUB_TOKEN 配置或网络连接',
+                    'source': 'github'
+                })
+            
+            return jsonify({
+                'current': {
+                    'repo': repo_key,
+                    'topics': list(current_topics),
+                    'language': current_language,
+                    'stars': current_stars,
+                    'openrank': round(current_openrank, 2)
+                },
+                'similar': similar_repos,
+                'message': None,
+                'source': 'github'
+            })
+            
+        except Exception as e:
+            logger.error(f"GitHub 搜索失败: {e}")
+            return jsonify({
+                'current': {
+                    'repo': repo_key,
+                    'topics': list(current_topics),
+                    'language': current_language,
+                    'stars': current_stars,
+                    'openrank': round(current_openrank, 2)
+                },
+                'similar': [],
+                'message': f'GitHub 搜索失败: {str(e)}',
+                'source': 'github'
+            })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'similar': []}), 500
 
 
 @app.route('/api/metric-groups', methods=['GET'])
@@ -616,6 +1287,150 @@ def get_project_summary(project_name):
         return jsonify(summary)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/project/<path:project_name>/regenerate-summary', methods=['POST'])
+def regenerate_project_summary(project_name):
+    """重新生成项目 AI 摘要（当原摘要生成失败时使用）"""
+    try:
+        # 检查 DeepSeek 客户端是否可用
+        try:
+            from Agent.deepseek_client import DeepSeekClient, get_deepseek_client
+            client = get_deepseek_client()
+            if not client:
+                return jsonify({
+                    'error': 'DeepSeek API 不可用。请检查：\n1. 是否已安装 openai 库 (pip install openai)\n2. 是否已配置 DEEPSEEK_API_KEY 环境变量',
+                    'success': False
+                }), 400
+        except ImportError as e:
+            return jsonify({
+                'error': f'无法导入 DeepSeek 客户端: {str(e)}',
+                'success': False
+            }), 400
+        
+        # 找到项目数据目录
+        project_dir_name = project_name.replace('/', '_')
+        data_dir = os.path.join(os.path.dirname(__file__), 'DataProcessor', 'data', project_dir_name)
+        
+        if not os.path.exists(data_dir):
+            return jsonify({'error': f'项目数据目录不存在: {project_dir_name}', 'success': False}), 404
+        
+        # 找到最新的 monthly_data 文件夹
+        monthly_folders = [f for f in os.listdir(data_dir) if f.startswith('monthly_data_')]
+        if not monthly_folders:
+            return jsonify({'error': '未找到项目月度数据', 'success': False}), 404
+        
+        latest_folder = sorted(monthly_folders)[-1]
+        monthly_path = os.path.join(data_dir, latest_folder)
+        
+        # project_summary.json 在 timeseries_for_model 子目录下
+        model_path = os.path.join(monthly_path, 'timeseries_for_model')
+        
+        # 加载 project_summary.json
+        summary_path = os.path.join(model_path, 'project_summary.json')
+        if not os.path.exists(summary_path):
+            # 备用：直接在 monthly_path 下查找
+            summary_path = os.path.join(monthly_path, 'project_summary.json')
+            if not os.path.exists(summary_path):
+                return jsonify({'error': '未找到 project_summary.json', 'success': False}), 404
+        
+        with open(summary_path, 'r', encoding='utf-8') as f:
+            project_summary = json.load(f)
+        
+        # 加载 timeseries_data.json 获取指标数据（也在 timeseries_for_model 下）
+        timeseries_path = os.path.join(model_path, 'timeseries_data.json')
+        timeseries_data = {}
+        if os.path.exists(timeseries_path):
+            with open(timeseries_path, 'r', encoding='utf-8') as f:
+                timeseries_data = json.load(f)
+        else:
+            # 备用：直接在 monthly_path 下查找
+            timeseries_path = os.path.join(monthly_path, 'timeseries_data.json')
+            if os.path.exists(timeseries_path):
+                with open(timeseries_path, 'r', encoding='utf-8') as f:
+                    timeseries_data = json.load(f)
+        
+        # 提取关键信息
+        repo_info = project_summary.get('repo_info', {})
+        data_range = project_summary.get('data_range', {})
+        issue_stats = project_summary.get('issue_stats', {})
+        
+        repo_name = repo_info.get('full_name', project_name.replace('_', '/'))
+        repo_description = repo_info.get('description', '')
+        repo_language = repo_info.get('language', '')
+        repo_stars = repo_info.get('stargazers_count', repo_info.get('stars', 0))
+        
+        date_range = f"{data_range.get('start', '?')} 至 {data_range.get('end', '?')}"
+        total_months = data_range.get('months', 0)
+        
+        # 计算平均指标
+        avg_openrank = 0
+        avg_activity = 0
+        metrics = timeseries_data.get('metrics', {})
+        openrank_data = metrics.get('OpenRank', {})
+        activity_data = metrics.get('活跃度', {})
+        
+        if openrank_data:
+            values = [v for v in openrank_data.values() if isinstance(v, (int, float))]
+            avg_openrank = sum(values) / len(values) if values else 0
+        
+        if activity_data:
+            values = [v for v in activity_data.values() if isinstance(v, (int, float))]
+            avg_activity = sum(values) / len(values) if values else 0
+        
+        # 构建提示词
+        prompt = f"""你是开源项目分析专家。请为以下项目生成一个全面的项目摘要（3-5段话，突出项目特点、发展趋势和主要活动）。
+
+【项目基本信息】
+- 项目名称: {repo_name}
+- 项目描述: {repo_description}
+- 主要语言: {repo_language}
+- Star数: {repo_stars}
+
+【数据统计】
+- 数据时间范围: {date_range}（共 {total_months} 个月）
+- 平均OpenRank: {avg_openrank:.2f}
+- 平均活跃度: {avg_activity:.2f}
+
+【Issue分类统计】
+{json.dumps(issue_stats, ensure_ascii=False, indent=2) if issue_stats else '暂无分类数据'}
+
+请生成一个全面的项目摘要，包括：
+1. 项目定位和核心功能
+2. 项目的发展趋势和活跃度
+3. 主要的技术活动和社区参与情况
+4. 项目的整体健康状况和未来展望
+
+摘要应该简洁、专业，突出项目的核心价值和特点。"""
+        
+        # 调用 DeepSeek API
+        try:
+            new_summary = client.ask(prompt, context="")
+            if not new_summary or new_summary.startswith('抱歉'):
+                return jsonify({'error': f'AI 生成失败: {new_summary}', 'success': False}), 500
+        except Exception as e:
+            return jsonify({'error': f'AI API 调用失败: {str(e)}', 'success': False}), 500
+        
+        # 更新 project_summary.json
+        project_summary['ai_summary'] = new_summary
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(project_summary, f, ensure_ascii=False, indent=2)
+        
+        # 清除缓存，强制重新加载
+        data_service.clear_cache(project_name.replace('/', '_'))
+        
+        logger.info(f"[摘要重生成] {project_name} 摘要已更新")
+        
+        return jsonify({
+            'success': True,
+            'message': '摘要已成功重新生成',
+            'summary': new_summary
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
 
 
 @app.route('/api/qa', methods=['POST'])
@@ -791,523 +1606,10 @@ def crawl_project_text(project_name):
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/predict/<path:repo_key>', methods=['POST'])
-def predict_metrics(repo_key):
-    """预测指定仓库的时序指标"""
-    try:
-        # 检查 GitPulse 是否可用
-        if not GITPULSE_AVAILABLE:
-            return jsonify({
-                'error': 'GitPulse 预测功能不可用，请检查后端配置',
-                'details': '请安装 GitPulse 依赖: pip install -r GitPulse/requirements_predict.txt'
-            }), 503
-        
-        # 支持两种格式：owner/repo 或 owner_repo
-        if '_' in repo_key and '/' not in repo_key:
-            repo_key = repo_key.replace('_', '/')
-        
-        # 检查数据是否存在
-        if repo_key not in data_service.loaded_timeseries:
-            return jsonify({'error': f'项目 {repo_key} 的时序数据不存在'}), 404
-        
-        # 获取请求参数
-        data = request.json or {}
-        metric_name = data.get('metric_name', '').strip()
-        forecast_months = data.get('forecast_months', 6)
-        include_reasoning = data.get('include_reasoning', True)
-        
-        # 验证参数
-        if forecast_months < 1 or forecast_months > 12:
-            return jsonify({'error': '预测月数必须在1-12之间'}), 400
-        
-        # 获取时序数据（已转换为按指标组织的格式）
-        timeseries_data = data_service.loaded_timeseries[repo_key]
-        
-        # 如果没有指定指标，返回所有可预测的指标列表（只返回 GitPulse 支持的指标）
-        if not metric_name:
-            available_metrics = []
-            if hasattr(predictor, 'supported_metrics'):
-                # 只返回 GitPulse 支持的指标
-                available_metrics = sorted(list(predictor.supported_metrics))
-            elif timeseries_data:
-                # 如果没有 supported_metrics，从数据中提取，但只返回支持的指标
-                supported_set = {'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数', 
-                                '新增贡献者', '贡献者', '不活跃贡献者', '总线因子', '新增Issue', 
-                                '关闭Issue', 'Issue评论', '变更请求', 'PR接受数', 'PR审查'}
-                for metric_key in timeseries_data.keys():
-                    metric_name_clean = metric_key.replace('opendigger_', '')
-                    if metric_name_clean in supported_set:
-                        available_metrics.append(metric_name_clean)
-                available_metrics = sorted(list(set(available_metrics)))
-            
-            return jsonify({
-                'available_metrics': available_metrics,
-                'message': '请指定要预测的指标名称',
-                'note': 'GitPulse 只支持16个指标，其他指标（如代码变更行数）暂不支持'
-            })
-        
-        # 验证指标是否被 GitPulse 支持
-        metric_name_clean = metric_name.replace('opendigger_', '')
-        GITPULSE_SUPPORTED_METRICS = {
-            'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数',
-            '新增贡献者', '贡献者', '不活跃贡献者', '总线因子', '新增Issue',
-            '关闭Issue', 'Issue评论', '变更请求', 'PR接受数', 'PR审查'
-        }
-        if metric_name_clean not in GITPULSE_SUPPORTED_METRICS:
-            return jsonify({
-                'error': f'指标 "{metric_name}" 不被 GitPulse 模型支持',
-                'supported_metrics': sorted(list(GITPULSE_SUPPORTED_METRICS)),
-                'hint': f'GitPulse 只支持以下16个指标: {", ".join(sorted(GITPULSE_SUPPORTED_METRICS))}'
-            }), 400
-        
-        # 使用清理后的指标名称
-        metric_name = metric_name_clean
-        
-        # 提取指定指标的历史数据
-        historical_data = {}
-        
-        # 构建指标键名（尝试多种格式）
-        metric_keys_to_try = [
-            f'opendigger_{metric_name}',  # opendigger_关注度
-            metric_name,  # 关注度
-            f'opendigger_{metric_name.replace(" ", "")}',  # 去除空格
-        ]
-        
-        # 找到匹配的指标键
-        matched_metric_key = None
-        for key in metric_keys_to_try:
-            if key in timeseries_data:
-                matched_metric_key = key
-                break
-        
-        # 如果还没找到，尝试模糊匹配
-        if not matched_metric_key:
-            for key in timeseries_data.keys():
-                # 去掉前缀后比较
-                clean_key = key.replace('opendigger_', '')
-                if clean_key == metric_name or key.endswith(metric_name):
-                    matched_metric_key = key
-                    break
-        
-        if matched_metric_key:
-            # 从转换后的格式中提取数据
-            metric_data = timeseries_data[matched_metric_key]
-            if isinstance(metric_data, dict) and 'raw' in metric_data:
-                historical_data = metric_data['raw']
-            elif isinstance(metric_data, dict):
-                # 如果没有 raw 字段，直接使用
-                historical_data = metric_data
-        else:
-            # 如果还是找不到，返回错误和可用指标列表
-            available_metrics = []
-            for metric_key in timeseries_data.keys():
-                if metric_key.startswith('opendigger_'):
-                    available_metrics.append(metric_key.replace('opendigger_', ''))
-                else:
-                    available_metrics.append(metric_key)
-            
-            return jsonify({
-                'error': f'未找到指标 {metric_name} 的历史数据',
-                'available_metrics': available_metrics,
-                'hint': f'请使用以下指标名称之一: {", ".join(available_metrics[:10])}'
-            }), 404
-        
-        if not historical_data:
-            return jsonify({
-                'error': f'未找到指标 {metric_name} 的历史数据',
-                'available_metrics': list(timeseries_data.get(sorted(timeseries_data.keys())[0], {}).keys()) if timeseries_data else []
-            }), 404
-        
-        # 获取完整的 16 维时序数据（用于 GitPulse）
-        # 注意：timeseries_data 已经是按指标组织的格式，需要从 data_service 获取原始数据
-        full_timeseries_data = None
-        if hasattr(predictor, 'predict') and 'GitPulse' in str(type(predictor)):
-            # 从 data_service 获取所有指标的原始数据（按月份组织）
-            all_metrics_data = data_service.get_all_metrics_historical_data(repo_key)
-            if all_metrics_data:
-                # 构建按月份组织的数据格式
-                full_timeseries_data = {}
-                # 收集所有月份
-                all_months = set()
-                for metric_data in all_metrics_data.values():
-                    if isinstance(metric_data, dict) and 'raw' in metric_data:
-                        all_months.update(metric_data['raw'].keys())
-                
-                # 为每个月构建指标字典
-                for month in sorted(all_months):
-                    metrics_dict = {}
-                    for metric_key, metric_data in all_metrics_data.items():
-                        if isinstance(metric_data, dict) and 'raw' in metric_data:
-                            # 注意：使用 clean_metric_name 避免覆盖外部的 metric_name 变量！
-                            clean_metric_name = metric_key.replace('opendigger_', '')
-                            value = metric_data['raw'].get(month)
-                            if value is not None:
-                                metrics_dict[clean_metric_name] = value
-                    if metrics_dict:
-                        full_timeseries_data[month] = metrics_dict
-        
-        # 获取文本数据（用于 GitPulse）
-        text_timeseries = None
-        repo_context = None
-        if repo_key in data_service.loaded_text:
-            text_data = data_service.loaded_text[repo_key]
-            # 提取仓库描述
-            repo_info_docs = [doc for doc in text_data if doc.get('type') == 'repo_info']
-            if repo_info_docs:
-                try:
-                    repo_info = json.loads(repo_info_docs[0].get('content', '{}'))
-                    repo_context = repo_info.get('description', '')
-                except:
-                    pass
-        
-        # 执行预测
-        result = predictor.predict(
-            metric_name=metric_name,
-            historical_data=historical_data,
-            forecast_months=forecast_months,
-            include_reasoning=include_reasoning,
-            text_timeseries=text_timeseries,
-            repo_context=repo_context,
-            full_timeseries_data=full_timeseries_data  # 传递完整数据
-        )
-        
-        # 添加元数据
-        result['metric_name'] = metric_name
-        result['repo_key'] = repo_key
-        result['historical_data_points'] = len(historical_data)
-        result['forecast_months'] = forecast_months
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+# 注意: /api/predict/* 路由已弃用，请使用 /api/forecast/* 路由
+# 旧的预测路由已删除以避免 predictor 未定义错误
 
 
-@app.route('/api/predict/<path:repo_key>/explain', methods=['POST'])
-def predict_with_explanation(repo_key):
-    """预测并生成归因解释"""
-    try:
-        if not GITPULSE_AVAILABLE:
-            return jsonify({'error': 'GitPulse 预测功能不可用'}), 503
-        
-        if '_' in repo_key and '/' not in repo_key:
-            repo_key = repo_key.replace('_', '/')
-        
-        if repo_key not in data_service.loaded_timeseries:
-            return jsonify({'error': f'项目 {repo_key} 的时序数据不存在'}), 404
-        
-        data = request.json or {}
-        metric_name = data.get('metric_name', '').strip()
-        forecast_months = data.get('forecast_months', 6)
-        
-        if not metric_name:
-            return jsonify({'error': '请指定预测指标'}), 400
-        
-        # 验证指标
-        metric_name_clean = metric_name.replace('opendigger_', '')
-        GITPULSE_SUPPORTED_METRICS = {
-            'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数',
-            '新增贡献者', '贡献者', '不活跃贡献者', '总线因子', '新增Issue',
-            '关闭Issue', 'Issue评论', '变更请求', 'PR接受数', 'PR审查'
-        }
-        if metric_name_clean not in GITPULSE_SUPPORTED_METRICS:
-            return jsonify({'error': f'指标 "{metric_name}" 不被支持'}), 400
-        
-        # 获取时序数据
-        timeseries_data = data_service.loaded_timeseries[repo_key]
-        
-        # 提取历史数据
-        historical_data = {}
-        metric_keys_to_try = [f'opendigger_{metric_name_clean}', metric_name_clean]
-        matched_key = None
-        for key in metric_keys_to_try:
-            if key in timeseries_data:
-                matched_key = key
-                break
-        
-        if matched_key:
-            metric_data = timeseries_data[matched_key]
-            if isinstance(metric_data, dict) and 'raw' in metric_data:
-                historical_data = metric_data['raw']
-            elif isinstance(metric_data, dict):
-                historical_data = metric_data
-        
-        if not historical_data:
-            return jsonify({'error': f'未找到 {metric_name} 的历史数据'}), 404
-        
-        # 准备完整数据用于GitPulse
-        full_timeseries_data = {}
-        for month in sorted(historical_data.keys()):
-            metrics_dict = {}
-            for mk, mv in timeseries_data.items():
-                clean_name = mk.replace('opendigger_', '')
-                if isinstance(mv, dict) and 'raw' in mv:
-                    if month in mv['raw']:
-                        metrics_dict[clean_name] = mv['raw'][month]
-                elif isinstance(mv, dict) and month in mv:
-                    metrics_dict[clean_name] = mv[month]
-            if metrics_dict:
-                full_timeseries_data[month] = metrics_dict
-        
-        # 执行预测
-        prediction_result = predictor.predict(
-            metric_name=metric_name_clean,
-            historical_data=historical_data,
-            forecast_months=forecast_months,
-            include_reasoning=True,
-            full_timeseries_data=full_timeseries_data
-        )
-        
-        # 获取仓库上下文
-        repo_context = None
-        if repo_key in data_service.loaded_text:
-            text_data = data_service.loaded_text[repo_key]
-            repo_info_docs = [doc for doc in text_data if doc.get('type') == 'repo_info']
-            if repo_info_docs:
-                try:
-                    repo_context = json.loads(repo_info_docs[0].get('content', '{}'))
-                except:
-                    pass
-        
-        # 获取Issue统计
-        issue_stats = None
-        if repo_key in data_service.loaded_text:
-            text_data = data_service.loaded_text[repo_key]
-            issues = [doc for doc in text_data if doc.get('type') == 'issue']
-            issue_stats = {
-                'bug': len([i for i in issues if 'bug' in i.get('content', '').lower()]),
-                'feature': len([i for i in issues if 'feature' in i.get('content', '').lower()]),
-                'other': len(issues)
-            }
-        
-        # 生成归因解释
-        explanation = prediction_explainer.generate_explanation(
-            metric_name=metric_name_clean,
-            historical_data=historical_data,
-            forecast_data=prediction_result.get('forecast', {}),
-            confidence=prediction_result.get('confidence', 0.5),
-            repo_context=repo_context,
-            issue_stats=issue_stats
-        )
-        
-        return jsonify({
-            'prediction': prediction_result,
-            'explanation': explanation,
-            'metric_name': metric_name_clean,
-            'repo_key': repo_key
-        })
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/predict/<path:repo_key>/scenario', methods=['POST'])
-def predict_scenario(repo_key):
-    """场景模拟预测 - 支持用户调整假设参数"""
-    try:
-        if not GITPULSE_AVAILABLE:
-            return jsonify({'error': 'GitPulse 预测功能不可用'}), 503
-        
-        if '_' in repo_key and '/' not in repo_key:
-            repo_key = repo_key.replace('_', '/')
-        
-        if repo_key not in data_service.loaded_timeseries:
-            return jsonify({'error': f'项目 {repo_key} 的时序数据不存在'}), 404
-        
-        data = request.json or {}
-        metric_name = data.get('metric_name', '').strip()
-        forecast_months = data.get('forecast_months', 6)
-        scenario_params = data.get('scenario_params', {})
-        
-        if not metric_name:
-            return jsonify({'error': '请指定预测指标'}), 400
-        
-        # 验证指标
-        metric_name_clean = metric_name.replace('opendigger_', '')
-        GITPULSE_SUPPORTED_METRICS = {
-            'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数',
-            '新增贡献者', '贡献者', '不活跃贡献者', '总线因子', '新增Issue',
-            '关闭Issue', 'Issue评论', '变更请求', 'PR接受数', 'PR审查'
-        }
-        if metric_name_clean not in GITPULSE_SUPPORTED_METRICS:
-            return jsonify({'error': f'指标 "{metric_name}" 不被支持'}), 400
-        
-        # 获取时序数据
-        timeseries_data = data_service.loaded_timeseries[repo_key]
-        
-        # 提取历史数据
-        historical_data = {}
-        metric_keys_to_try = [f'opendigger_{metric_name_clean}', metric_name_clean]
-        matched_key = None
-        for key in metric_keys_to_try:
-            if key in timeseries_data:
-                matched_key = key
-                break
-        
-        if matched_key:
-            metric_data = timeseries_data[matched_key]
-            if isinstance(metric_data, dict) and 'raw' in metric_data:
-                historical_data = metric_data['raw']
-            elif isinstance(metric_data, dict):
-                historical_data = metric_data
-        
-        if not historical_data:
-            return jsonify({'error': f'未找到 {metric_name} 的历史数据'}), 404
-        
-        # 准备完整数据
-        full_timeseries_data = {}
-        for month in sorted(historical_data.keys()):
-            metrics_dict = {}
-            for mk, mv in timeseries_data.items():
-                clean_name = mk.replace('opendigger_', '')
-                if isinstance(mv, dict) and 'raw' in mv:
-                    if month in mv['raw']:
-                        metrics_dict[clean_name] = mv['raw'][month]
-                elif isinstance(mv, dict) and month in mv:
-                    metrics_dict[clean_name] = mv[month]
-            if metrics_dict:
-                full_timeseries_data[month] = metrics_dict
-        
-        # 执行基线预测
-        baseline_result = predictor.predict(
-            metric_name=metric_name_clean,
-            historical_data=historical_data,
-            forecast_months=forecast_months,
-            include_reasoning=True,
-            full_timeseries_data=full_timeseries_data
-        )
-        
-        # 获取仓库上下文
-        repo_context = None
-        if repo_key in data_service.loaded_text:
-            text_data = data_service.loaded_text[repo_key]
-            repo_info_docs = [doc for doc in text_data if doc.get('type') == 'repo_info']
-            if repo_info_docs:
-                try:
-                    repo_context = json.loads(repo_info_docs[0].get('content', '{}'))
-                except:
-                    pass
-        
-        # 生成场景分析
-        scenario_result = prediction_explainer.generate_scenario_analysis(
-            metric_name=metric_name_clean,
-            historical_data=historical_data,
-            baseline_forecast=baseline_result.get('forecast', {}),
-            scenario_params=scenario_params,
-            repo_context=repo_context
-        )
-        
-        return jsonify({
-            'baseline': baseline_result,
-            'scenario': scenario_result,
-            'metric_name': metric_name_clean,
-            'repo_key': repo_key,
-            'scenario_params': scenario_params
-        })
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/predict/<path:repo_key>/multi-metric', methods=['POST'])
-def predict_multi_metric(repo_key):
-    """多指标联动预测 - 同时预测多个指标并返回对比数据"""
-    try:
-        if not GITPULSE_AVAILABLE:
-            return jsonify({'error': 'GitPulse 预测功能不可用'}), 503
-        
-        if '_' in repo_key and '/' not in repo_key:
-            repo_key = repo_key.replace('_', '/')
-        
-        if repo_key not in data_service.loaded_timeseries:
-            return jsonify({'error': f'项目 {repo_key} 的时序数据不存在'}), 404
-        
-        data = request.json or {}
-        metric_names = data.get('metric_names', [])
-        forecast_months = data.get('forecast_months', 6)
-        
-        if not metric_names or len(metric_names) < 1:
-            return jsonify({'error': '请至少选择一个预测指标'}), 400
-        
-        if len(metric_names) > 4:
-            return jsonify({'error': '最多支持同时预测4个指标'}), 400
-        
-        GITPULSE_SUPPORTED_METRICS = {
-            'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数',
-            '新增贡献者', '贡献者', '不活跃贡献者', '总线因子', '新增Issue',
-            '关闭Issue', 'Issue评论', '变更请求', 'PR接受数', 'PR审查'
-        }
-        
-        # 获取时序数据
-        timeseries_data = data_service.loaded_timeseries[repo_key]
-        
-        # 准备完整数据
-        full_timeseries_data = {}
-        for mk, mv in timeseries_data.items():
-            if isinstance(mv, dict) and 'raw' in mv:
-                for month, value in mv['raw'].items():
-                    if month not in full_timeseries_data:
-                        full_timeseries_data[month] = {}
-                    clean_name = mk.replace('opendigger_', '')
-                    full_timeseries_data[month][clean_name] = value
-        
-        results = {}
-        
-        for metric_name in metric_names:
-            metric_name_clean = metric_name.replace('opendigger_', '')
-            
-            if metric_name_clean not in GITPULSE_SUPPORTED_METRICS:
-                results[metric_name_clean] = {'error': f'指标不被支持'}
-                continue
-            
-            # 提取历史数据
-            historical_data = {}
-            metric_keys_to_try = [f'opendigger_{metric_name_clean}', metric_name_clean]
-            for key in metric_keys_to_try:
-                if key in timeseries_data:
-                    metric_data = timeseries_data[key]
-                    if isinstance(metric_data, dict) and 'raw' in metric_data:
-                        historical_data = metric_data['raw']
-                    elif isinstance(metric_data, dict):
-                        historical_data = metric_data
-                    break
-            
-            if not historical_data:
-                results[metric_name_clean] = {'error': '未找到历史数据'}
-                continue
-            
-            # 执行预测
-            prediction = predictor.predict(
-                metric_name=metric_name_clean,
-                historical_data=historical_data,
-                forecast_months=forecast_months,
-                include_reasoning=False,
-                full_timeseries_data=full_timeseries_data
-            )
-            
-            results[metric_name_clean] = {
-                'historical': historical_data,
-                'forecast': prediction.get('forecast', {}),
-                'confidence': prediction.get('confidence', 0),
-                'trend': prediction.get('trend_analysis', {})
-            }
-        
-        return jsonify({
-            'results': results,
-            'repo_key': repo_key,
-            'forecast_months': forecast_months
-        })
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/analysis/trend/<path:repo_key>', methods=['GET'])
@@ -1440,118 +1742,6 @@ def get_comparison_analysis(repo_key):
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/predict/<path:repo_key>/multiple', methods=['POST'])
-def predict_multiple_metrics(repo_key):
-    """批量预测多个指标"""
-    try:
-        # 检查 GitPulse 是否可用
-        if not GITPULSE_AVAILABLE:
-            return jsonify({'error': 'GitPulse 预测功能不可用'}), 503
-        
-        # 支持两种格式：owner/repo 或 owner_repo
-        if '_' in repo_key and '/' not in repo_key:
-            repo_key = repo_key.replace('_', '/')
-        
-        # 检查数据是否存在
-        if repo_key not in data_service.loaded_timeseries:
-            return jsonify({'error': f'项目 {repo_key} 的时序数据不存在'}), 404
-        
-        # 获取请求参数
-        data = request.json or {}
-        metric_names = data.get('metric_names', [])
-        forecast_months = data.get('forecast_months', 6)
-        
-        if not metric_names:
-            return jsonify({'error': '请提供要预测的指标列表'}), 400
-        
-        # GitPulse 支持的16个指标
-        GITPULSE_SUPPORTED_METRICS = {
-            'OpenRank', '活跃度', 'Star数', 'Fork数', '关注度', '参与者数',
-            '新增贡献者', '贡献者', '不活跃贡献者', '总线因子', '新增Issue',
-            '关闭Issue', 'Issue评论', '变更请求', 'PR接受数', 'PR审查'
-        }
-        
-        # 过滤掉不支持的指标
-        supported_metric_names = []
-        unsupported_metric_names = []
-        for metric_name in metric_names:
-            metric_name_clean = metric_name.replace('opendigger_', '')
-            if metric_name_clean in GITPULSE_SUPPORTED_METRICS:
-                supported_metric_names.append(metric_name_clean)
-            else:
-                unsupported_metric_names.append(metric_name)
-        
-        if not supported_metric_names:
-            return jsonify({
-                'error': '没有支持的指标可以预测',
-                'unsupported_metrics': unsupported_metric_names,
-                'supported_metrics': sorted(list(GITPULSE_SUPPORTED_METRICS)),
-                'hint': f'GitPulse 只支持以下16个指标: {", ".join(sorted(GITPULSE_SUPPORTED_METRICS))}'
-            }), 400
-        
-        # 获取时序数据
-        timeseries_data = data_service.loaded_timeseries[repo_key]
-        
-        # 提取所有指标的历史数据（只处理支持的指标）
-        metrics_data = {}
-        for metric_name in supported_metric_names:
-            # 构建指标键名（尝试多种格式）
-            metric_keys_to_try = [
-                f'opendigger_{metric_name}',
-                metric_name,
-                f'opendigger_{metric_name.replace(" ", "")}',
-            ]
-            
-            matched_metric_key = None
-            for key in metric_keys_to_try:
-                if key in timeseries_data:
-                    matched_metric_key = key
-                    break
-            
-            if not matched_metric_key:
-                for key in timeseries_data.keys():
-                    clean_key = key.replace('opendigger_', '')
-                    if clean_key == metric_name or key.endswith(metric_name):
-                        matched_metric_key = key
-                        break
-            
-            if matched_metric_key:
-                metric_data = timeseries_data[matched_metric_key]
-                if isinstance(metric_data, dict) and 'raw' in metric_data:
-                    historical_data = metric_data['raw']
-                elif isinstance(metric_data, dict):
-                    historical_data = metric_data
-                else:
-                    historical_data = {}
-                
-                if historical_data:
-                    metrics_data[metric_name] = historical_data
-        
-        if not metrics_data:
-            return jsonify({'error': '未找到任何指标的历史数据'}), 404
-        
-        # 批量预测
-        results = predictor.predict_multiple(metrics_data, forecast_months)
-        
-        # 如果有不支持的指标，在响应中说明
-        response_data = {
-            'results': results,
-            'repo_key': repo_key,
-            'forecast_months': forecast_months
-        }
-        
-        if unsupported_metric_names:
-            response_data['warnings'] = {
-                'unsupported_metrics': unsupported_metric_names,
-                'message': f'以下指标不被 GitPulse 支持，已自动过滤: {", ".join(unsupported_metric_names)}'
-            }
-        
-        return jsonify(response_data)
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/chaoss/<path:repo_key>', methods=['GET'])

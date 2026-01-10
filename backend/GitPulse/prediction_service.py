@@ -83,30 +83,34 @@ def check_dependencies() -> Tuple[bool, str]:
 
 
 class DataNormalizer:
-    """数据标准化/反标准化器"""
+    """数据标准化/反标准化器 - 保持原始精度"""
     
     def __init__(self):
-        # 每个指标的均值和标准差（会在预测时从历史数据计算）
         self.means = None  # [16]
         self.stds = None   # [16]
         self.fitted = False
+        self.last_values = None  # 最后一个历史值
     
     def fit(self, data: np.ndarray):
         """
         从历史数据计算标准化参数
+        使用标准的均值和标准差，保持数据精度
         
         Args:
             data: [T, 16] 历史时序数据
         """
-        # 计算每个指标的均值和标准差
+        # 保存最后一个历史值（用于平滑过渡）
+        self.last_values = data[-1].copy()
+        
+        # 使用标准的均值和标准差
         self.means = np.mean(data, axis=0)
         self.stds = np.std(data, axis=0)
         
-        # 防止标准差为0（常数序列）
+        # 防止标准差为0
         self.stds = np.where(self.stds < 1e-8, 1.0, self.stds)
         
         self.fitted = True
-        print(f"[Normalizer] 已计算标准化参数: means={self.means[:3].round(2)}..., stds={self.stds[:3].round(2)}...")
+        print(f"[Normalizer] 均值: {self.means[:3].round(4)}..., 标准差: {self.stds[:3].round(4)}...")
     
     def transform(self, data: np.ndarray) -> np.ndarray:
         """标准化数据"""
@@ -119,6 +123,143 @@ class DataNormalizer:
         if not self.fitted:
             raise ValueError("请先调用 fit() 计算标准化参数")
         return data * self.stds + self.means
+    
+    def _detect_delayed_data(self, historical_data: np.ndarray, check_months: int = 2) -> int:
+        """
+        检测数据延迟导致的异常值
+        
+        OpenDigger 数据通常有 1-2 个月的延迟，最后几个月可能是 0 或异常低值
+        
+        Args:
+            historical_data: [hist_len, 16] 历史数据
+            check_months: 检查最后多少个月
+        
+        Returns:
+            需要排除的月份数（从末尾开始）
+        """
+        hist_len = len(historical_data)
+        if hist_len < 6:
+            return 0
+        
+        exclude_months = 0
+        
+        # 计算历史数据的统计特征（排除最后 check_months 个月）
+        stable_data = historical_data[:-check_months] if check_months > 0 else historical_data
+        
+        for i in range(check_months):
+            idx = hist_len - 1 - i  # 从最后一个月开始检查
+            current_values = historical_data[idx]
+            
+            # 检查每个指标
+            anomaly_count = 0
+            for j in range(len(current_values)):
+                stable_mean = np.mean(stable_data[:, j])
+                stable_std = np.std(stable_data[:, j])
+                
+                # 如果某个值接近0，但历史均值很高，可能是数据延迟
+                if stable_mean > 10:  # 只对均值较大的指标检查
+                    # 如果当前值 < 均值的 5% 且 < 均值 - 3*标准差
+                    if current_values[j] < stable_mean * 0.05 and current_values[j] < stable_mean - 3 * stable_std:
+                        anomaly_count += 1
+            
+            # 如果超过一半的指标异常，认为这个月是延迟数据
+            if anomaly_count >= len(current_values) // 3:
+                exclude_months = i + 1
+            else:
+                break
+        
+        if exclude_months > 0:
+            print(f"[Normalizer] 检测到数据延迟，排除最后 {exclude_months} 个月的异常数据")
+        
+        return exclude_months
+    
+    def trend_based_prediction(self, model_prediction: np.ndarray, 
+                                 historical_data: np.ndarray,
+                                 trend_window: int = 6) -> np.ndarray:
+        """
+        基于历史趋势的预测后处理
+        
+        核心思想：
+        1. 检测并排除数据延迟导致的异常值（最后1-2个月可能是0）
+        2. 从有效的历史数据计算趋势
+        3. 预测从有效的最后历史值开始，延续趋势
+        4. 模型输出作为趋势微调
+        
+        Args:
+            model_prediction: [pred_len, 16] 模型反标准化后的预测
+            historical_data: [hist_len, 16] 原始历史数据
+            trend_window: 用于计算趋势的窗口大小
+        
+        Returns:
+            修正后的预测数据
+        """
+        pred_len = len(model_prediction)
+        n_vars = model_prediction.shape[1]
+        result = np.zeros_like(model_prediction)
+        
+        # 检测数据延迟
+        exclude_months = self._detect_delayed_data(historical_data, check_months=2)
+        
+        # 使用有效的历史数据
+        if exclude_months > 0:
+            valid_historical = historical_data[:-exclude_months]
+            print(f"[Normalizer] 使用前 {len(valid_historical)} 个月的有效数据")
+        else:
+            valid_historical = historical_data
+        
+        hist_len = len(valid_historical)
+        if hist_len < 3:
+            # 数据太少，直接返回模型预测
+            return model_prediction
+        
+        # 计算有效的最后值和趋势窗口
+        valid_last_values = valid_historical[-1]
+        actual_window = min(trend_window, hist_len - 1)
+        
+        for i in range(n_vars):
+            last_value = valid_last_values[i]
+            
+            # 计算最近的趋势（月均变化量）
+            if actual_window >= 2:
+                recent_values = valid_historical[-actual_window:, i]
+                
+                # 使用线性回归计算趋势斜率
+                x = np.arange(actual_window)
+                try:
+                    slope = np.polyfit(x, recent_values, 1)[0]
+                except:
+                    slope = 0
+                
+                # 限制趋势幅度，避免极端外推
+                # 最多每月变化 5%（更保守）
+                max_monthly_change = abs(last_value) * 0.05 + 0.5
+                slope = np.clip(slope, -max_monthly_change, max_monthly_change)
+            else:
+                slope = 0
+            
+            # 模型预测的相对变化
+            model_relative = (model_prediction[:, i] - self.means[i]) / max(self.stds[i], 1e-8)
+            
+            # 生成预测
+            current_slope = slope
+            for t in range(pred_len):
+                # 基础预测：延续历史趋势
+                trend_value = last_value + current_slope * (t + 1)
+                
+                # 模型微调（权重较小，主要依赖趋势）
+                model_weight = 0.15 * np.exp(-t * 0.15)
+                model_adjustment = model_relative[t] * self.stds[i] * model_weight
+                
+                # 最终预测
+                result[t, i] = trend_value + model_adjustment
+                
+                # 确保非负
+                result[t, i] = max(0, result[t, i])
+                
+                # 趋势衰减：趋势逐渐趋于平稳
+                current_slope *= 0.85
+        
+        return result
     
     def fit_transform(self, data: np.ndarray) -> np.ndarray:
         """计算参数并标准化"""
@@ -227,17 +368,23 @@ class GitPulsePredictor:
         
         prediction_normalized = output.squeeze(0).cpu().numpy()  # [pred_len, n_vars]
         
-        # ====== 关键：反标准化输出数据 ======
-        prediction = self.normalizer.inverse_transform(prediction_normalized)
+        # ====== 反标准化：恢复到原始尺度 ======
+        model_prediction = self.normalizer.inverse_transform(prediction_normalized)
         
-        # 确保预测值非负（对于大多数指标来说）
-        prediction = np.maximum(prediction, 0)
+        # ====== 关键：基于历史趋势的预测后处理 ======
+        # 这确保预测从历史最后值开始，延续历史趋势，而不是跳到全局均值
+        prediction = self.normalizer.trend_based_prediction(
+            model_prediction=model_prediction,
+            historical_data=ts,  # 传入原始历史数据用于计算趋势
+            trend_window=6  # 使用最近6个月计算趋势
+        )
         
         stats = {
             'input_length': len(timeseries),
             'prediction_length': self.pred_len,
             'device': self.device,
-            'normalized': True
+            'trend_based': True,
+            'last_values': self.normalizer.last_values[:3].tolist() if self.normalizer.last_values is not None else None
         }
         
         return prediction, stats
@@ -310,6 +457,56 @@ class PredictionService:
                     'error': '没有找到有效的时序数据',
                     'available': True
                 }
+            
+            # ====== 处理数据延迟：排除最后1-2个月 ======
+            # OpenDigger 数据通常有 1-2 个月延迟，最后几个月可能是 0 或异常
+            sorted_all_months = sorted(all_months_data.keys())
+            
+            print(f"[GitPulse] 原始数据月份: {sorted_all_months[-5:] if len(sorted_all_months) >= 5 else sorted_all_months}")
+            
+            # 检测并排除延迟数据
+            delay_months_to_predict = []
+            if len(sorted_all_months) >= 6:
+                # 计算历史均值（排除最后2个月）
+                valid_months = sorted_all_months[:-2]
+                
+                # 收集所有指标的历史均值
+                all_valid_sums = []
+                for m in valid_months:
+                    metrics = all_months_data[m]
+                    month_sum = 0
+                    for key, val in metrics.items():
+                        if isinstance(val, (int, float)) and val > 0:
+                            month_sum += val
+                    if month_sum > 0:
+                        all_valid_sums.append(month_sum)
+                
+                if all_valid_sums:
+                    hist_mean_sum = sum(all_valid_sums) / len(all_valid_sums)
+                    print(f"[GitPulse] 历史月均指标总和: {hist_mean_sum:.1f}")
+                    
+                    # 检查最后2个月
+                    for m in sorted_all_months[-2:]:
+                        metrics = all_months_data[m]
+                        month_sum = 0
+                        for key, val in metrics.items():
+                            if isinstance(val, (int, float)) and val > 0:
+                                month_sum += val
+                        
+                        print(f"[GitPulse] {m} 月指标总和: {month_sum:.1f}")
+                        
+                        # 如果当月总和接近0但历史均值很高，认为是延迟数据
+                        if hist_mean_sum > 100 and month_sum < hist_mean_sum * 0.1:
+                            delay_months_to_predict.append(m)
+                            print(f"[GitPulse] {m} 被识别为延迟数据，排除")
+            
+            # 从数据中移除延迟月份
+            for m in delay_months_to_predict:
+                if m in all_months_data:
+                    del all_months_data[m]
+            
+            if delay_months_to_predict:
+                print(f"[GitPulse] 已排除延迟数据: {delay_months_to_predict}")
             
             # 准备16个指标的历史数据矩阵 [T, 16]
             timeseries_matrix, sorted_months = self._prepare_timeseries_matrix(all_months_data)
@@ -501,6 +698,7 @@ class PredictionService:
             
             results[metric_name] = {
                 'forecast': forecast,
+                'historical': historical,  # 添加历史数据用于前端对比
                 'historical_length': len(historical),
                 'confidence': confidence,
                 'trend': trend,

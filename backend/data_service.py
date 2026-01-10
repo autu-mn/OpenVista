@@ -89,11 +89,11 @@ class DataService:
             }
         }
         
-        # Issue 分类关键词
+        # Issue 分类关键词（注意：避免使用过于通用的词如 'issue', 'problem', 'question'）
         self.category_keywords = {
-            '功能需求': ['feature', 'request', 'enhancement', 'add', 'support', 'implement', '功能', '需求', '新增', '支持'],
-            'Bug修复': ['bug', 'fix', 'error', 'issue', 'crash', 'fail', 'broken', '错误', '修复', '问题', '崩溃'],
-            '社区咨询': ['question', 'help', 'how', 'why', 'doc', 'documentation', '问题', '帮助', '文档', '如何']
+            '功能需求': ['feature', 'request', 'enhancement', 'add support', 'implement', 'new feature', '功能', '需求', '新增', '支持'],
+            'Bug修复': ['bug', 'bugfix', 'fix bug', 'error', 'crash', 'fail', 'broken', 'not working', '错误', '修复', '崩溃', 'regression'],
+            '社区咨询': ['how to', 'help needed', 'doc', 'documentation', 'tutorial', '帮助', '文档', '如何', '教程']
         }
         
         # 自动加载 Data 目录下的数据
@@ -498,10 +498,40 @@ class DataService:
         if os.path.exists(project_summary_file):
             try:
                 with open(project_summary_file, 'r', encoding='utf-8') as f:
-                    self.loaded_project_summary[repo_key] = json.load(f)
-                    print(f"  [OK] 已加载项目 AI 摘要: {repo_key}")
+                    content = f.read()
+                    try:
+                        self.loaded_project_summary[repo_key] = json.loads(content)
+                        print(f"  [OK] 已加载项目 AI 摘要: {repo_key}")
+                    except json.JSONDecodeError as je:
+                        # 尝试修复常见的 JSON 问题
+                        print(f"  [WARN] 项目摘要 JSON 格式错误，尝试修复: {repo_key}")
+                        # 移除可能的 BOM 和控制字符
+                        content = content.lstrip('\ufeff').replace('\x00', '')
+                        # 移除尾随逗号
+                        import re
+                        content = re.sub(r',\s*}', '}', content)
+                        content = re.sub(r',\s*]', ']', content)
+                        try:
+                            self.loaded_project_summary[repo_key] = json.loads(content)
+                            print(f"  [OK] 已修复并加载项目 AI 摘要: {repo_key}")
+                        except json.JSONDecodeError:
+                            print(f"  [ERROR] 无法修复项目摘要 JSON: {repo_key} (错误位置: 行 {je.lineno}, 列 {je.colno})")
+                            # 创建一个空的摘要，避免后续加载失败
+                            self.loaded_project_summary[repo_key] = {
+                                'ai_summary': '项目摘要数据格式错误，请尝试重新爬取',
+                                'issue_stats': {},
+                                'date_range': {},
+                                'total_months': 0,
+                                'error': str(je)
+                            }
             except Exception as e:
                 print(f"加载项目摘要失败 {repo_key}: {e}")
+                self.loaded_project_summary[repo_key] = {
+                    'ai_summary': f'加载失败: {str(e)}',
+                    'issue_stats': {},
+                    'date_range': {},
+                    'total_months': 0
+                }
     
     def _generate_time_range(self, start, end):
         """生成时间范围列表 (YYYY-MM 格式)"""
@@ -1020,32 +1050,50 @@ class DataService:
                     if not issues_text:
                         continue
                     
-                    # 分类统计
+                    # 分类统计 - 使用 Issue 标题进行更精确的分类
                     categories = {'功能需求': 0, 'Bug修复': 0, '社区咨询': 0, '其他': 0}
-                    issues_lower = issues_text.lower()
                     
-                    # 使用关键词分类
-                    for category, keywords in self.category_keywords.items():
-                        for keyword in keywords:
-                            if keyword.lower() in issues_lower:
-                                # 计算该关键词出现的次数（简单计数）
-                                count = issues_lower.count(keyword.lower())
-                                categories[category] += count
+                    # 从文本中提取 Issue 标题（格式：Issue #1234: Title）
+                    issue_entries = re.findall(r'Issue #\d+:\s*([^\n]+)', issues_text, re.IGNORECASE)
                     
-                    # 如果没有匹配到任何分类，尝试从 Issue 标题中提取
-                    if sum(categories.values()) == 0:
-                        # 从文本中提取 Issue 标题（格式：Issue #1234: Title）
-                        issue_titles = re.findall(r'Issue #\d+:\s*([^\n]+)', issues_text, re.IGNORECASE)
-                        for title in issue_titles:
-                            title_lower = title.lower()
-                            if any(kw in title_lower for kw in ['bug', 'error', 'fix', 'crash', 'broken', '错误', '修复', '问题', '崩溃']):
-                                categories['Bug修复'] += 1
-                            elif any(kw in title_lower for kw in ['feature', 'request', 'enhancement', 'add', '功能', '需求', '新增']):
-                                categories['功能需求'] += 1
-                            elif any(kw in title_lower for kw in ['question', 'help', 'how', 'why', '问题', '帮助', '如何']):
-                                categories['社区咨询'] += 1
-                            else:
-                                categories['其他'] += 1
+                    for title in issue_entries:
+                        title_lower = title.lower()
+                        classified = False
+                        
+                        # Bug 修复关键词（优先级最高）
+                        bug_keywords = ['bug', 'error', 'crash', 'fail', 'broken', 'not working', 
+                                       'exception', 'traceback', 'regression', 'incorrect', 
+                                       '错误', '修复', '崩溃', '失败']
+                        if any(kw in title_lower for kw in bug_keywords):
+                            categories['Bug修复'] += 1
+                            classified = True
+                        
+                        # 功能需求关键词
+                        elif any(kw in title_lower for kw in ['feature', 'request', 'enhancement', 
+                                                               'add support', 'implement', 'new', 
+                                                               'proposal', '功能', '需求', '新增', '支持']):
+                            categories['功能需求'] += 1
+                            classified = True
+                        
+                        # 社区咨询关键词
+                        elif any(kw in title_lower for kw in ['how to', 'help', 'question', 'doc', 
+                                                               'documentation', 'tutorial', 'example',
+                                                               '帮助', '文档', '如何', '问题']):
+                            categories['社区咨询'] += 1
+                            classified = True
+                        
+                        # 未分类归入其他
+                        if not classified:
+                            categories['其他'] += 1
+                    
+                    # 如果没有从标题提取到任何 Issue，尝试统计关键词
+                    if not issue_entries:
+                        issues_lower = issues_text.lower()
+                        # 简单计数方法
+                        categories['Bug修复'] = issues_lower.count('bug') + issues_lower.count('error') + issues_lower.count('crash')
+                        categories['功能需求'] = issues_lower.count('feature') + issues_lower.count('enhancement')
+                        categories['社区咨询'] = issues_lower.count('how to') + issues_lower.count('documentation')
+                        categories['其他'] = max(1, 10 - sum(categories.values()))
                     
                     total = sum(categories.values())
                     if total == 0:
@@ -1383,115 +1431,17 @@ class DataService:
                 # 回退到从文本数据计算
                 issues_data = self.get_aligned_issues(repo_key)
                 result['issueCategories'] = [
-                {
-                    'month': month,
-                    'total': data.get('total', 0),
-                    'categories': data.get('categories', {})
-                }
-                for month, data in issues_data.get('monthlyData', {}).items()
-            ]
-            result['monthlyKeywords'] = {
-                month: data.get('keywords', [])
-                for month, data in issues_data.get('monthlyData', {}).items()
-            }
-        except Exception as e:
-            result['issueCategories'] = []
-            result['monthlyKeywords'] = {}
-        
-        # 获取波动分析
-        try:
-            waves_data = self.analyze_waves(repo_key)
-            result['waves'] = waves_data.get('waves', [])
-        except Exception as e:
-            result['waves'] = []
-        
-        # 获取项目 AI 摘要
-        if actual_key in self.loaded_project_summary:
-            summary_data = self.loaded_project_summary[actual_key]
-            result['projectSummary'] = {
-                'aiSummary': summary_data.get('ai_summary', ''),
-                'issueStats': summary_data.get('issue_stats', {}),
-                'dataRange': summary_data.get('date_range', summary_data.get('data_range', {})),
-                'total_months': summary_data.get('total_months', 0)
-            }
-        else:
-            result['projectSummary'] = None
-        
-        return result
-    
-    def get_demo_data(self):
-        """获取演示数据 - 优先使用真实数据"""
-        repos = self.get_loaded_repos()
-        
-        if repos:
-            # 使用第一个已加载的真实仓库
-            repo_key = repos[0]
-            return self._get_real_repo_data(repo_key)
-        else:
-            # 没有真实数据，返回错误提示
-            return {
-                'error': '没有找到真实数据。请将处理后的数据放入 Data 目录。',
-                'dataDir': DATA_DIR
-            }
-    
-    def _get_real_repo_data(self, repo_key):
-        """获取真实仓库的数据"""
-        result = {
-            'repoKey': repo_key,
-            'repoInfo': {
-                'name': repo_key.split('/')[-1] if '/' in repo_key else repo_key,
-                'description': f'{repo_key} 的真实数据',
-                'language': 'Unknown'
-            }
-        }
-        
-        # 获取分组时序数据
-        try:
-            result['groupedTimeseries'] = self.get_grouped_timeseries(repo_key)
-        except Exception as e:
-            result['groupedTimeseries'] = {'error': str(e)}
-        
-        # 获取 Issue 分析数据（优先使用预计算的分类数据）
-        actual_key = self._normalize_repo_key(repo_key)
-        try:
-            if actual_key in self.loaded_issue_classification:
-                # 使用预计算的 Issue 分类数据
-                classification_data = self.loaded_issue_classification[actual_key]
-                by_month = classification_data.get('by_month', {})
-                labels = classification_data.get('labels', {
-                    'feature': '功能需求', 'bug': 'Bug修复', 
-                    'question': '社区咨询', 'other': '其他'
-                })
-                
-                result['issueCategories'] = [
                     {
                         'month': month,
                         'total': data.get('total', 0),
-                        'categories': {
-                            labels.get('feature', '功能需求'): data.get('feature', 0),
-                            labels.get('bug', 'Bug修复'): data.get('bug', 0),
-                            labels.get('question', '社区咨询'): data.get('question', 0),
-                            labels.get('other', '其他'): data.get('other', 0)
-                        }
+                        'categories': data.get('categories', {})
                     }
-                    for month, data in sorted(by_month.items())
+                    for month, data in issues_data.get('monthlyData', {}).items()
                 ]
-                result['monthlyKeywords'] = {}  # 预计算数据中没有关键词
-            else:
-                # 回退到从文本数据计算
-                issues_data = self.get_aligned_issues(repo_key)
-                result['issueCategories'] = [
-                {
-                    'month': month,
-                    'total': data.get('total', 0),
-                    'categories': data.get('categories', {})
+                result['monthlyKeywords'] = {
+                    month: data.get('keywords', [])
+                    for month, data in issues_data.get('monthlyData', {}).items()
                 }
-                for month, data in issues_data.get('monthlyData', {}).items()
-            ]
-            result['monthlyKeywords'] = {
-                month: data.get('keywords', [])
-                for month, data in issues_data.get('monthlyData', {}).items()
-            }
         except Exception as e:
             result['issueCategories'] = []
             result['monthlyKeywords'] = {}
@@ -1516,3 +1466,43 @@ class DataService:
             result['projectSummary'] = None
         
         return result
+    
+    def clear_cache(self, repo_key: str = None):
+        """
+        清除缓存数据，强制重新加载
+        
+        Args:
+            repo_key: 仓库标识，如果为 None 则清除所有缓存
+        """
+        if repo_key:
+            # 规范化 key
+            actual_key = self._normalize_repo_key(repo_key)
+            
+            # 清除指定仓库的缓存
+            if actual_key in self.loaded_data:
+                del self.loaded_data[actual_key]
+            if actual_key in self.loaded_timeseries:
+                del self.loaded_timeseries[actual_key]
+            if actual_key in self.loaded_text:
+                del self.loaded_text[actual_key]
+            if actual_key in self.loaded_issue_classification:
+                del self.loaded_issue_classification[actual_key]
+            if actual_key in self.loaded_project_summary:
+                del self.loaded_project_summary[actual_key]
+            
+            print(f"[DataService] 已清除缓存: {actual_key}")
+            
+            # 重新加载该仓库的数据
+            self._auto_load_data()
+        else:
+            # 清除所有缓存
+            self.loaded_data = {}
+            self.loaded_timeseries = {}
+            self.loaded_text = {}
+            self.loaded_issue_classification = {}
+            self.loaded_project_summary = {}
+            
+            print("[DataService] 已清除所有缓存")
+            
+            # 重新加载所有数据
+            self._auto_load_data()

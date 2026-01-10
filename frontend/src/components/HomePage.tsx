@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Search, Github, Sparkles, TrendingUp, Database, FolderOpen } from 'lucide-react'
 import ProgressIndicator from './ProgressIndicator'
@@ -22,16 +22,42 @@ interface LocalProject {
 interface HomePageProps {
   onProjectReady: (projectName: string) => void
   onProgressUpdate?: (progress: CrawlProgress) => void
+  initialOwner?: string  // 新增：初始的owner值
+  initialRepo?: string   // 新增：初始的repo值
 }
 
-export default function HomePage({ onProjectReady, onProgressUpdate }: HomePageProps) {
-  const [owner, setOwner] = useState('')
-  const [repo, setRepo] = useState('')
+export default function HomePage({ onProjectReady, onProgressUpdate, initialOwner = '', initialRepo = '' }: HomePageProps) {
+  const [owner, setOwner] = useState(initialOwner)
+  const [repo, setRepo] = useState(initialRepo)
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
   const [localProjects, setLocalProjects] = useState<LocalProject[]>([])
   const [showLocalProjects, setShowLocalProjects] = useState(false)
+  
+  // 用于跟踪是否已经自动提交过（避免重复触发）
+  // 使用一个 key 来跟踪当前的初始值组合，当组合变化时重置标记
+  const lastInitialKey = useRef<string>('')
+  const hasAutoSubmitted = useRef(false)
+  
+  // 当初始值变化时，更新输入框的值
+  useEffect(() => {
+    console.log('[初始值更新] useEffect 触发:', { initialOwner, initialRepo })
+    if (initialOwner) {
+      setOwner(initialOwner)
+    }
+    if (initialRepo) {
+      setRepo(initialRepo)
+    }
+    
+    // 当初始值组合变化时，重置自动提交标记
+    const currentKey = `${initialOwner}_${initialRepo}`
+    if (currentKey !== lastInitialKey.current && initialOwner && initialRepo) {
+      console.log('[初始值更新] 检测到新的初始值组合，重置自动提交标记')
+      lastInitialKey.current = currentKey
+      hasAutoSubmitted.current = false
+    }
+  }, [initialOwner, initialRepo])
   
   // 获取本地已有项目列表
   useEffect(() => {
@@ -49,10 +75,9 @@ export default function HomePage({ onProjectReady, onProgressUpdate }: HomePageP
     fetchLocalProjects()
   }, [])
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    
-    if (!owner.trim() || !repo.trim()) {
+  // 提取分析逻辑到独立函数，便于自动调用（使用useCallback确保引用稳定）
+  const startAnalysis = useCallback(async (ownerName: string, repoName: string) => {
+    if (!ownerName || !repoName) {
       setError('请输入仓库所有者用户名和仓库名')
       return
     }
@@ -64,20 +89,20 @@ export default function HomePage({ onProjectReady, onProgressUpdate }: HomePageP
     try {
       // 先检查数据是否已存在
       const checkResponse = await fetch(
-        `/api/check_project?owner=${encodeURIComponent(owner.trim())}&repo=${encodeURIComponent(repo.trim())}`
+        `/api/check_project?owner=${encodeURIComponent(ownerName)}&repo=${encodeURIComponent(repoName)}`
       )
       const checkData = await checkResponse.json()
       
       if (checkData.exists) {
         // 数据已存在，直接使用
         setLoading(false)
-        onProjectReady(checkData.projectName || `${owner.trim()}_${repo.trim()}`)
+        onProjectReady(checkData.projectName || `${ownerName}_${repoName}`)
         return
       }
 
       // 数据不存在，开始爬取
       const eventSource = new EventSource(
-        `/api/crawl?owner=${encodeURIComponent(owner.trim())}&repo=${encodeURIComponent(repo.trim())}`
+        `/api/crawl?owner=${encodeURIComponent(ownerName)}&repo=${encodeURIComponent(repoName)}`
       )
 
       eventSource.onmessage = (event) => {
@@ -96,7 +121,7 @@ export default function HomePage({ onProjectReady, onProgressUpdate }: HomePageP
             setLoading(false)
             eventSource.close()
             setTimeout(() => {
-              onProjectReady(data.projectName || `${owner.trim()}_${repo.trim()}`)
+              onProjectReady(data.projectName || `${ownerName}_${repoName}`)
             }, 500)
           } else if (data.type === 'metrics_ready') {
             // 指标数据已就绪，立即切换到项目页面展示
@@ -122,7 +147,7 @@ export default function HomePage({ onProjectReady, onProgressUpdate }: HomePageP
             // 如果之前已经切换到项目页面，这里可以刷新数据
             // 如果还没切换，则切换
             if (!data.projectName) {
-              const projectName = `${owner.trim()}_${repo.trim()}`
+              const projectName = `${ownerName}_${repoName}`
               setTimeout(() => onProjectReady(projectName), 500)
             }
           } else if (data.type === 'error') {
@@ -146,6 +171,41 @@ export default function HomePage({ onProjectReady, onProgressUpdate }: HomePageP
       setError('请求失败，请检查后端服务是否启动')
       setLoading(false)
     }
+  }, [onProjectReady, onProgressUpdate])
+  
+  // 当有初始值且未自动提交过时，自动开始分析
+  useEffect(() => {
+    console.log('[自动分析] useEffect 触发:', {
+      initialOwner,
+      initialRepo,
+      hasAutoSubmitted: hasAutoSubmitted.current,
+      lastInitialKey: lastInitialKey.current
+    })
+    
+    // 只有当 initialOwner 和 initialRepo 都有值，且还没有自动提交过时，才自动开始分析
+    if (initialOwner && initialRepo && !hasAutoSubmitted.current) {
+      console.log('[自动分析] 条件满足，准备自动开始分析:', initialOwner, initialRepo)
+      // 标记为已自动提交，避免重复触发
+      hasAutoSubmitted.current = true
+      // 使用 setTimeout 确保在下一个事件循环中执行，避免与状态更新冲突
+      setTimeout(() => {
+        console.log('[自动分析] 开始调用 startAnalysis')
+        startAnalysis(initialOwner.trim(), initialRepo.trim())
+      }, 100)
+    } else {
+      console.log('[自动分析] 条件不满足，跳过自动分析', {
+        hasInitialOwner: !!initialOwner,
+        hasInitialRepo: !!initialRepo,
+        hasAutoSubmitted: hasAutoSubmitted.current
+      })
+    }
+  }, [initialOwner, initialRepo, startAnalysis])
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    // 重置自动提交标记，允许手动提交
+    hasAutoSubmitted.current = false
+    startAnalysis(owner.trim(), repo.trim())
   }
 
   return (

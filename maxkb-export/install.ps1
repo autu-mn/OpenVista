@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # OpenVista MaxKB 一键安装脚本 (Windows)
 # ============================================================
 
@@ -93,12 +93,22 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# 使用 pg_restore 恢复（--clean 会先删除再创建）
+# 先清理数据库中的所有表（确保干净状态）
+Write-Host "  清理现有数据库..."
+docker exec openvista-maxkb bash -c "psql -U root -d maxkb -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' 2>/dev/null || true" | Out-Null
+
+# 使用 pg_restore 恢复（--no-owner --no-acl 避免权限问题）
 Write-Host "  正在恢复数据（可能需要几分钟）..."
-docker exec openvista-maxkb bash -c "pg_restore -U root -d maxkb --clean --if-exists --no-owner /tmp/backup.dump 2>/dev/null || true"
+docker exec openvista-maxkb bash -c "pg_restore -U root -d maxkb --no-owner --no-acl --verbose /tmp/backup.dump 2>&1 | grep -v 'ERROR' | tail -5" | Out-Null
 
 # 清理临时文件
 docker exec openvista-maxkb rm -f /tmp/backup.dump
+
+# 重置管理员密码为默认值（备份中的密码可能不同）
+Write-Host "  重置管理员密码..."
+$passwordMd5 = "0df6c52f03e1c75504c7bb9a09c2a016"  # MaxKB@123456 的 MD5 哈希值
+$sql = "UPDATE `"user`" SET password = '$passwordMd5' WHERE username = 'admin';"
+echo $sql | docker exec -i openvista-maxkb psql -U root -d maxkb 2>$null | Out-Null
 
 # 重启服务使配置生效
 Write-Host "  重启服务..."
@@ -126,6 +136,9 @@ Write-Host "============================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "访问地址: " -NoNewline; Write-Host "http://localhost:8080" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "如果备份包含用户数据，请使用备份中的账户登录。" -ForegroundColor Yellow
-Write-Host "如果是全新安装，请先注册一个新账户。" -ForegroundColor Yellow
+Write-Host "默认登录凭据：" -ForegroundColor Yellow
+Write-Host "  用户名: admin" -ForegroundColor Yellow
+Write-Host "  密码:   MaxKB@123456" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "提示: 如果备份中包含其他用户，请使用备份中的账户登录。" -ForegroundColor Cyan
 Write-Host ""

@@ -13,9 +13,10 @@ interface Project {
 interface ProjectSearchProps {
   onSelectProject: (projectName: string) => void
   currentProject?: string
+  onNavigateToHome?: (owner: string, repo: string) => void  // 新增：跳转到首页的回调
 }
 
-export default function ProjectSearch({ onSelectProject, currentProject }: ProjectSearchProps) {
+export default function ProjectSearch({ onSelectProject, currentProject, onNavigateToHome }: ProjectSearchProps) {
   const [owner, setOwner] = useState('')
   const [repo, setRepo] = useState('')
   const [suggestions, setSuggestions] = useState<Project[]>([])
@@ -108,17 +109,49 @@ export default function ProjectSearch({ onSelectProject, currentProject }: Proje
     setShowSuggestions(false)
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (owner && repo) {
       const projectName = `${owner}_${repo}`
       // 检查是否在建议列表中
       const found = suggestions.find(p => p.name === projectName)
-      if (found) {
+      if (found && found.exists) {
+        // 项目存在，直接选择
         handleSelect(found)
       } else {
-        // 直接尝试加载
-        onSelectProject(projectName)
-        setShowSuggestions(false)
+        // 项目不在建议列表中，检查项目是否存在
+        setLoading(true)
+        try {
+          const checkResponse = await fetch(
+            `/api/check_project?owner=${encodeURIComponent(owner.trim())}&repo=${encodeURIComponent(repo.trim())}`
+          )
+          const checkData = await checkResponse.json()
+          
+          if (checkData.exists) {
+            // 项目存在，选择它
+            onSelectProject(checkData.projectName || projectName)
+            setShowSuggestions(false)
+          } else {
+            // 项目不存在，跳转到首页进行爬取
+            if (onNavigateToHome) {
+              onNavigateToHome(owner.trim(), repo.trim())
+            } else {
+              // 如果没有提供回调，尝试直接选择（向后兼容）
+              onSelectProject(projectName)
+            }
+            setShowSuggestions(false)
+          }
+        } catch (error) {
+          console.error('检查项目失败:', error)
+          // 出错时，如果有回调就跳转首页，否则尝试直接选择
+          if (onNavigateToHome) {
+            onNavigateToHome(owner.trim(), repo.trim())
+          } else {
+            onSelectProject(projectName)
+          }
+          setShowSuggestions(false)
+        } finally {
+          setLoading(false)
+        }
       }
     }
   }

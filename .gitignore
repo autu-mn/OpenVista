@@ -94,14 +94,20 @@ GitPulse/training/checkpoints/*.pt
 GitPulse/predict/models/*.pt
 GitPulse/Pretrain-data/*.json
 
-# 截图和临时笔记
-*.png
-*.jpg
-*.jpeg
-!GitPulse/paper/figures/*.png
-!frontend/public/*.svg
+# 临时笔记
 *.md.bak
 
 # 爬虫进度文件
 batch_crawl_progress.json
 repo_list.csv
+
+# 数据集生成临时文件
+get-dataset/temp_data/
+get-dataset/crawl_progress.json
+get-dataset/dataset_output/
+
+# 图片文件（保留项目文档图片）
+!image/
+!image/*.png
+!backend/GitPulse/image/
+!backend/GitPulse/image/*.png

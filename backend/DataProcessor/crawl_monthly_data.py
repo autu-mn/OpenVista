@@ -318,7 +318,8 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 50, enable
         static_texts = processor.extract_static_texts(static_docs)
         print("\n  → 保存描述文本并上传到MaxKB...")
         maxkb_dir = processor.save_for_maxkb(static_texts, output_dir)
-        processor.upload_to_maxkb(maxkb_dir, owner, repo)
+        # 注意：此时 output_dir 可能还没有 timeseries_for_model 目录，需要稍后再次上传
+        processor.upload_to_maxkb(maxkb_dir, owner, repo, output_dir=None)
     else:
         static_texts = {}
     
@@ -429,6 +430,11 @@ def crawl_project_monthly(owner: str, repo: str, max_per_month: int = 50, enable
     
     # 保存用于双塔模型的数据（时序对齐后的数据）+ 生成总体 AI 摘要
     processor.save_for_model(processed_data, output_dir, repo_info=repo_info)
+    
+    # 再次上传到MaxKB（这次包含项目摘要和Issue数据）
+    if not skip_docs and static_texts:
+        print("\n  → 上传项目摘要和Issue数据到MaxKB...")
+        processor.upload_to_maxkb(maxkb_dir, owner, repo, output_dir=output_dir)
     
     # 保存元数据（包含仓库信息和标签）
     metadata = {
