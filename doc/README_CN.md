@@ -895,7 +895,7 @@ $$S_{\text{overall}} = \frac{1}{D} \sum_{d=1}^{D} S_d^{\text{final}}$$
 ### 个人独立完成部分
 
 - **autu-mn**：PPT 制作、项目方案书撰写、CHAOSS 评价算法设计与实现
-- **詹江叶煜**：GitPulse 预测模型设计与实现、前后端链接与集成
+- **LuYuan-Zjyy**：GitPulse 预测模型设计与实现、前后端链接与集成
 
 ### 其余部分均为共同合作完成。
 
